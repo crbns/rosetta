@@ -45,26 +45,29 @@ input[type=text]::placeholder{color:var(--muted);opacity:.7}
 #empty{font:22px/1.5 var(--read);color:var(--muted);max-width:30em;margin:48px 0 0}
 #empty kbd{font:inherit;font-size:.8em;border:1px solid var(--line);border-radius:6px;padding:0 6px}
 section.part{margin-top:40px}
-.banner{border-radius:18px;padding:24px 28px;background:var(--t0)}
+.banner{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;border-radius:12px;padding:12px 18px;margin-bottom:28px;background:var(--t0)}
 .s0{background:var(--t0);--sev:var(--s0)}.s1{background:var(--t1);--sev:var(--s1)}.s2{background:var(--t2);--sev:var(--s2)}.s3{background:var(--t3);--sev:var(--s3)}.s4{background:var(--t4);--sev:var(--s4)}
 .banner.alert{box-shadow:0 0 0 2px var(--sev);animation:ring 2.4s ease-in-out infinite}
 @keyframes ring{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--sev) 25%,transparent)}}
-.sev{font-size:25px;font-weight:600;line-height:1.25;letter-spacing:-.01em}
-.facts{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:8px}
+.sev{font-size:16px;font-weight:600}
+.sev:before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--sev);margin-right:9px}
+.facts{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
 .facts b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-.bars{display:flex;height:6px;gap:3px;margin-top:18px}
-.bars span{border-radius:3px;min-width:3px}
-#summary{font:31px/1.25 var(--read);letter-spacing:-.005em;max-width:24em;margin:32px 0 0}
-#result>#summary:first-child,#banner.hidden+#decisionError.hidden+#summary{margin-top:0}
-#answer{margin-top:24px;padding-left:16px;border-left:2px solid var(--s1);font:18px/1.55 var(--read);max-width:34em}
-#answer h3{font:600 13px var(--ui);margin:0 0 4px}
-#decisionError{font-size:14px;margin-top:20px}
-.line{display:flex;gap:16px;align-items:baseline;padding:11px 0 11px 18px;border-bottom:1px solid var(--line);position:relative}
+#decisionError{font-size:14px;margin:0 0 20px}
+.thead{display:flex;align-items:baseline;justify-content:space-between;gap:8px 20px;flex-wrap:wrap;margin-bottom:4px}
+.thead h2{font-size:14px;color:var(--muted);font-weight:500;margin:0}
+.legend{display:flex;gap:16px;font-size:13px;color:var(--muted)}
+.legend span:before{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}
+.legend .high:before{background:var(--s4)}.legend .mid:before{background:var(--s2)}
+.line{display:flex;gap:20px;align-items:baseline;padding:14px 0 14px 24px;border-bottom:1px solid var(--line);position:relative}
 .line:last-child{border-bottom:0}
-.line span:first-child{flex:1;font:18px/1.55 var(--read);max-width:36em}
-.line.high:before,.line.mid:before{content:'';position:absolute;left:2px;top:22px;width:7px;height:7px;border-radius:50%}
+.line span:first-child{flex:1;font:24px/1.4 var(--read);max-width:32em}
+.line.high:before,.line.mid:before{content:'';position:absolute;left:2px;top:27px;width:9px;height:9px;border-radius:50%}
 .line.high:before{background:var(--s4)}.line.mid:before{background:var(--s2)}
 .percent{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+#summary{font:18px/1.55 var(--read);max-width:36em;margin:0}
+#answer{margin-top:20px;padding-left:16px;border-left:2px solid var(--s1);font:18px/1.55 var(--read);max-width:36em}
+#answer h3{font:600 13px var(--ui);margin:0 0 4px}
 #unreadableLines div{font:18px/1.55 var(--read);color:var(--muted);padding:6px 0}
 #parseNotice{font-size:13px}
 #metrics{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:40px;font-variant-numeric:tabular-nums}
@@ -80,7 +83,7 @@ details[open] summary{margin-bottom:8px}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);max-height:300px;overflow:auto;font-size:12px;background:var(--well);border-radius:10px;padding:12px}
 .debug-image{width:200px;max-width:100%;border-radius:8px}
 .hidden{display:none!important}
-@media(max-width:850px){header{padding:20px 16px 0}main{grid-template-columns:minmax(0,1fr);gap:40px;padding:20px 16px 48px}.left{position:static}#summary{font-size:25px}#empty{margin-top:0}.logrow{grid-template-columns:5em 1fr 4em}.logrow .opt{display:none}}
+@media(max-width:850px){header{padding:20px 16px 0}main{grid-template-columns:minmax(0,1fr);gap:40px;padding:20px 16px 48px}.left{position:static}.line span:first-child{font-size:20px}.line.high:before,.line.mid:before{top:24px}#empty{margin-top:0}.logrow{grid-template-columns:5em 1fr 4em}.logrow .opt{display:none}}
 @media(prefers-reduced-motion:reduce){.banner.alert{animation:none}}
 </style>
 <header><h1>rosetta</h1><span id="runtime" class="meta">Checking runtime…</span></header>
@@ -94,15 +97,13 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);max-height:30
 <label class="field">Ask about it<input id="question" type="text" placeholder="Can I hike this afternoon?"></label>
 </section>
 <section class="reading" aria-live="polite">
-<p id="empty">Point the camera at a sign, menu or label and press Scan, or <kbd>space</kbd>. LFM3-VL reads and translates it on this board, then d1 ranks what matters to you.</p>
+<p id="empty">Point the camera at a sign, notice or medicine label and press Scan, or <kbd>space</kbd>. LFM3-VL reads and translates it on this board, with no network, then d1 marks the lines that matter.</p>
 <div id="result" class="hidden">
 <div id="banner" class="banner hidden"></div>
 <p id="decisionError" class="hidden muted">The decision model is unavailable. Showing the translation only.</p>
-<p id="summary"></p>
-<div id="answer" class="hidden"></div>
-<section id="ranked" class="part hidden"><h2>What matters</h2><div id="rankedLines"></div></section>
-<section id="unreadable" class="part hidden"><h2>Couldn't read, so not guessing</h2><div id="unreadableLines"></div></section>
-<section class="part"><h2>Full translation</h2><div id="lines"></div><p id="parseNotice" class="muted"></p></section>
+<section><div class="thead"><h2 id="from">Translation</h2><div id="legend" class="legend"><span class="high">Important</span><span class="mid">Worth knowing</span></div></div><div id="lines"></div><p id="parseNotice" class="muted"></p></section>
+<section id="unreadable" class="part hidden"><h2>Couldn't read</h2><div id="unreadableLines"></div></section>
+<section class="part"><h2>Summary</h2><p id="summary"></p><div id="answer" class="hidden"></div></section>
 <div id="metrics"></div>
 </div>
 <details open><summary>Recent scans</summary><div id="logrows"></div></details>
@@ -125,9 +126,10 @@ async function refreshStatus(){const s=await api('/status');threshold=s.importan
 function lineHtml(text,p){const cls=p==null?'':p>=.75?'high':p>=threshold?'mid':'';return `<div class="line ${cls}"><span>${esc(text)}</span><span class="percent">${pct(p)}</span></div>`}
 function beep(){try{const c=new AudioContext(),o=c.createOscillator(),g=c.createGain();o.type='sine';o.frequency.value=720;o.connect(g);g.connect(c.destination);g.gain.setValueAtTime(.08,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.18);o.start();o.stop(c.currentTime+.18);o.onended=()=>c.close()}catch(e){}}
 function render(r,fromWatch=false){if(!r?.scan_id)return;lastId=r.scan_id;$('empty').classList.add('hidden');$('result').classList.remove('hidden');const d=r.decision||{},v=r._vlm||{},sev=d.severity,cat=d.category,importance=d.importance||[];
-const bits=[v.mode==='mock'?'Mock':v.mode==='cli'?'CLI fallback':'Local model',`read ${v.seconds??'—'} s`,`TTFT ${v.ttft_ms??'—'} ms`,`${v.tok_s??'—'} tok/s`,`d1 ${d.seconds??'—'} s in ${d.passes??'—'} passes`,`total ${r._metrics?.total_s??'—'} s`];if(r.languages?.length)bits.push(r.languages.join(', '));if(cat?.value)bits.push(`${cat.value} ${pct(cat.confidence)}`);$('metrics').innerHTML=bits.map(b=>`<span>${esc(b)}</span>`).join('');
-const banner=$('banner');banner.className='banner '+(sev?'s'+sev.index:'hidden')+(r.gate?.alert?' alert':'');if(sev){banner.innerHTML=`<div class="sev">${esc(sev.label)}</div><div class="facts"><span>d1-2B is <b>${pct(sev.confidence)}</b> sure</span><span>Action needed <b>${pct(d.action_p)}</b></span><span>Affects you <b>${pct(d.personal_p)}</b></span></div>`;if(Array.isArray(sev.probabilities)){const colors=['var(--s0)','var(--s1)','var(--s2)','var(--s3)','var(--s4)'];banner.innerHTML+='<div class="bars" aria-hidden="true">'+sev.probabilities.map((p,i)=>`<span style="flex:${Math.max(.01,p)};background:${colors[i]||colors[0]}"></span>`).join('')+'</div>'}}
-$('decisionError').classList.toggle('hidden',!d.error);$('summary').textContent=r.summary||'No summary returned.';$('answer').classList.toggle('hidden',!r.answer);$('answer').innerHTML=`<h3>Your question</h3>${esc(r.answer)}`;const ranked=(r.lines||[]).map((t,i)=>({t,p:importance[i]})).filter(x=>x.p!=null&&x.p>=threshold).sort((a,b)=>b.p-a.p).slice(0,6);$('ranked').classList.toggle('hidden',!ranked.length);$('rankedLines').innerHTML=ranked.map(x=>lineHtml(x.t,x.p)).join('');$('unreadable').classList.toggle('hidden',!r.unreadable?.length);$('unreadableLines').innerHTML=(r.unreadable||[]).map(t=>`<div>${esc(t)}</div>`).join('');$('lines').innerHTML=(r.lines||[]).map((t,i)=>lineHtml(t,importance[i])).join('')||'<p class="muted">No readable lines returned.</p>';$('parseNotice').textContent=[r.parse_error?'Model output could not be parsed fully.':'',r.truncated?'Model output reached its token limit.':''].filter(Boolean).join(' ');$('debugImage').src=r._image||'';$('debugImage').classList.toggle('hidden',!r._image);$('debugVlm').textContent=v.raw||'';$('debugD1').textContent=JSON.stringify(d.raw||d,null,2);note(r.error||`Scan ${r.scan_id} done`);if(fromWatch&&r.gate?.alert)beep();refreshLog()}
+const bits=[v.mode==='mock'?'Mock':v.mode==='cli'?'CLI fallback':'Local model',`read ${v.seconds??'—'} s`,`TTFT ${v.ttft_ms??'—'} ms`,`${v.tok_s??'—'} tok/s`,`d1 ${d.seconds??'—'} s in ${d.passes??'—'} passes`,`total ${r._metrics?.total_s??'—'} s`];if(cat?.value)bits.push(`${cat.value} ${pct(cat.confidence)}`);$('metrics').innerHTML=bits.map(b=>`<span>${esc(b)}</span>`).join('');
+const banner=$('banner');banner.className='banner '+(sev?'s'+sev.index:'hidden')+(r.gate?.alert?' alert':'');if(sev)banner.innerHTML=`<span class="sev">${esc(sev.label)}</span><span class="facts"><span>d1-2B is <b>${pct(sev.confidence)}</b> sure</span><span>Action needed <b>${pct(d.action_p)}</b></span><span>Affects you <b>${pct(d.personal_p)}</b></span></span>`;
+const langs=r.languages||[];$('from').textContent=langs.length?'Translated from '+(langs.length>1?langs.slice(0,-1).join(', ')+' and '+langs.at(-1):langs[0]):'Translation';$('legend').classList.toggle('hidden',!importance.some(p=>p!=null));
+$('decisionError').classList.toggle('hidden',!d.error);$('summary').textContent=r.summary||'No summary returned.';$('answer').classList.toggle('hidden',!r.answer);$('answer').innerHTML=`<h3>Your question</h3>${esc(r.answer)}`;$('unreadable').classList.toggle('hidden',!r.unreadable?.length);$('unreadableLines').innerHTML=(r.unreadable||[]).map(t=>`<div>${esc(t)}</div>`).join('');$('lines').innerHTML=(r.lines||[]).map((t,i)=>lineHtml(t,importance[i])).join('')||'<p class="muted">No readable lines returned.</p>';$('parseNotice').textContent=[r.parse_error?'Model output could not be parsed fully.':'',r.truncated?'Model output reached its token limit.':''].filter(Boolean).join(' ');$('debugImage').src=r._image||'';$('debugImage').classList.toggle('hidden',!r._image);$('debugVlm').textContent=v.raw||'';$('debugD1').textContent=JSON.stringify(d.raw||d,null,2);note(r.error||`Scan ${r.scan_id} done`);if(fromWatch&&r.gate?.alert)beep();refreshLog()}
 const clock=ts=>(/T(\d\d:\d\d:\d\d)/.exec(ts||'')||[])[1]||ts||'';
 async function refreshLog(){try{const j=await api('/log?n=10');$('logrows').innerHTML=j.records.reverse().map(x=>`<div class="logrow"><span>${esc(clock(x.ts))}</span><span class="opt">${esc(x.trigger)}</span><span>${esc(x.d1?.category||'—')}</span><span class="opt">Severity ${esc(x.d1?.severity??'—')}</span><span class="${x.decision?.alert?'yes':''}">${x.decision?.alert?'Alert':esc(x.action?.type||'—')}</span>${x.errors?.length?`<span class="err">${esc(x.errors.join('; '))}</span>`:''}</div>`).join('')||'<p class="muted">No scans yet.</p>'}catch(e){$('logrows').textContent=e.message}}
 async function scan(image){if(busy)return;busy=true;$('scan').disabled=true;note('Reading and deciding on this device…');try{if(!image&&camera==='browser')image=crop(previewVideo);if(!image&&camera==='none')throw Error('No camera. Upload a photo to scan it.');const r=await post('/scan',{image,about:$('about').value,question:$('question').value});render(r)}catch(e){note(e.message)}finally{busy=false;$('scan').disabled=false}}

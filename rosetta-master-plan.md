@@ -1215,6 +1215,7 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D24 | `app.py` resumes `scan_id` from the max in `logs/rosetta.jsonl` at startup; JSONL record gains `metrics: {total_s}` (additive) | Restarts reset ids to 1 → `logs/img/N.png` overwritten, duplicate ids broke `calibrate.py` labels; README end-to-end median needs total_s in the log |
 | D25 | `samples/*_512.png` (12 props + `notext_512.png`) rendered from the prop PDFs: page → trim to the sign → pad square with page bg → 512×512 RGB PNG | §9.7 upload safety net + §14.1 smoke-test inputs (`tibet_512.png`). Clean renders = best case; the webcam will be worse |
 | D26 | `tools/prop_key.json` (§14.4 as regexes) + `tools/make_labels.py` (prop auto-detect, Must-item acceptance report, drafts `labels.json`) + `tools/metrics.py` (README median table) | Turns B11 acceptance + B14 labels + §11.5 measurement into one command each at the board, instead of hand work during 7:20–7:40. Regexes are drafts: eyeball the printout |
+| D27 | UI: translation is the hero (large serif lines in sign order, rose/sand importance dots at ≥0.75 / ≥`IMPORTANCE_THRESHOLD`); severity shrinks to a one-line strip; separate "What matters" list removed; soft stone palette, system fonts only | Field users (e.g. remote medical teams) need to read the sign first; the dots carry d1's ranking without duplicating lines. No §10 contract change |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---
