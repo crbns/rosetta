@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.18)
+project(rosetta_engine CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(IxianHexagon 0.2 CONFIG REQUIRED)   # cmake -DCMAKE_PREFIX_PATH=$IXIAN_SDK/lib/cmake
+find_package(nlohmann_json 3 QUIET)              # apt: nlohmann-json3-dev
+foreach(t rosetta_vlm rosetta_d1)
+  add_executable(${t} ${t}.cpp)
+  target_link_libraries(${t} PRIVATE zetic::ixian_hexagon)
+  if(nlohmann_json_FOUND)
+    target_link_libraries(${t} PRIVATE nlohmann_json::nlohmann_json)
+  else()
+    target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+  endif()
+endforeach()
