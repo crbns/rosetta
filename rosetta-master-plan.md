@@ -911,13 +911,13 @@ Internals may change; **these may not** unless `index.html` and this section are
 `decision` may be `null` (`DECIDER=none`) or `{"error": "..."}`. Errors: 400 / 502 / 503 / 500 as `{"error": "..."}`.
 
 ### 10.2 `GET /status`
-`{"server_camera": bool, "watch": bool, "vlm_mode": "engine|cli|mock", "decider": "zetic|none", "severity_levels": [5 labels], "importance_threshold": 0.5, "engines": {"vlm": {<ready event>, "peak_rss_mb": int, "alive": bool}, "d1": {...}}}`
+`{"server_camera": bool, "watch": bool, "scanning": bool, "vlm_mode": "engine|cli|mock", "decider": "zetic|none", "severity_levels": [5 labels], "importance_threshold": 0.5, "engines": {"vlm": {<ready event>, "peak_rss_mb": int, "alive": bool}, "d1": {...}}}`
 
 ### 10.3 Other routes
 - `GET /stream` → MJPEG; 404 JSON if there's no server camera.
 - `GET /log?n=20` → `{"records": [last n JSONL records]}`.
 - `POST /watch {"on": bool}` → `{"watch": bool}`.
-- `GET /latest?after=<scan_id>` → the newest `/scan`-shaped result with `scan_id > after`, or `{}`.
+- `GET /latest?after=<scan_id>` → the newest `/scan`-shaped result with `scan_id > after`, or `{}`; both carry `"scanning": bool` (a scan holds `scan_lock`) so the UI shows a loading state for watch-mode scans too.
 - `POST /ask {"scan_id": int, "question": str, "history": [{"q", "a"}]}` → `{"scan_id", "question", "answer", "truncated", "_vlm": {mode, seconds, ttft_ms, tok_s, completion_tokens, finish, errors}}`. Follow-up chat about a scan: re-sends `logs/img/<scan_id>.png` to the **same resident VLM** with `CHAT_SYSTEM_PROMPT` + the scan's translation + last 4 turns. `400` bad/missing scan or empty question, `503` while a scan holds the NPU, `502` VLM failure. One line per question in `logs/chat.jsonl` (kept out of `rosetta.jsonl`).
 
 ### 10.4 app ↔ VLM engine (JSON Lines over stdin/stdout)

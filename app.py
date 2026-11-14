@@ -279,11 +279,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
             elif url.path == "/status":
                 with state_lock: camera, watch = camera_ok, watch_on
-                self.json_response(200, dict(pipeline.status(), server_camera=camera, watch=watch))
+                self.json_response(200, dict(pipeline.status(), server_camera=camera, watch=watch, scanning=scan_lock.locked()))
             elif url.path == "/latest":
                 after = int(parse_qs(url.query).get("after", [0])[0])
                 with state_lock: result = latest if latest.get("scan_id", 0) > after else {}
-                self.json_response(200, result)
+                self.json_response(200, dict(result, scanning=scan_lock.locked()))
             elif url.path == "/log":
                 n = min(100, max(1, int(parse_qs(url.query).get("n", [20])[0])))
                 records = []
