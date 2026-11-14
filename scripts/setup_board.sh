@@ -39,9 +39,11 @@ cat <<'EOF'
 ================================================================================
 sudo apt-get update
 apt-get -s install --no-install-recommends libatomic1 qcom-fastrpc1 libqnn1     # simulate; read the plan
-sudo apt-get install --no-install-recommends libatomic1 qcom-fastrpc1 libqnn1
+sudo apt-get \
+  install --no-install-recommends libatomic1 qcom-fastrpc1 libqnn1
 sudo usermod -aG fastrpc "$USER"        # then RECONNECT ssh; check: id -nG | grep fastrpc
-sudo apt-get install --no-install-recommends cmake g++ make python3-opencv nlohmann-json3-dev tmux
+sudo apt-get \
+  install --no-install-recommends cmake g++ make python3-opencv nlohmann-json3-dev tmux
 ================================================================================
 EOF
 (( PRINT_ONLY )) && exit 0
