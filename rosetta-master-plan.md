@@ -312,7 +312,8 @@ rosetta/
 ├── rosetta-master-plan.md   ← this file
 ├── README.md                what it is, how to run, measured metrics (judges read this)
 ├── AGENTS.md, CLAUDE.md     "Read rosetta-master-plan.md first." + §12 rules (3–5 lines)
-├── app.py                   web server + pipeline + Engine supervisor + JSONL log (stdlib; OpenCV optional)
+├── app.py                   web server + camera + JSONL log (stdlib; OpenCV optional)
+├── pipeline.py              model pipeline + Engine supervisor (Isaac-owned boundary)
 ├── index.html               single-file UI, no external assets
 ├── engine/
 │   ├── CMakeLists.txt       builds rosetta_vlm (+ rosetta_d1) against the Ixian SDK
@@ -1164,6 +1165,9 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | Very short demo slot (2 min) | High | Lead with Wi-Fi off + Tibetan; one sentence per point |
 
 ### Known unknowns (fill in tonight)
+- Rehan app-shell build on this Windows workspace: `python` is a WindowsApps alias that cannot run; `py -3` reports "No installed Python found"; WSL is not installed. Python compile and mock HTTP acceptance remain unverified here. Run §14.2 on the IQ9 or another machine with Python before the demo.
+- The app shell now imports model functions from `pipeline.py` (same §10 HTTP contract). This lets Isaac own and replace runtime functions without editing Rehan's HTTP/camera/log code in `app.py`. Real SDK/model behavior remains unverified.
+- `tools/offline_audit.py` and the IQ9 runtime scripts are not in the current checkout, so the required audit and board rehearsal have not run. Vendor the audit from the organizer repo before submission, then review its findings.
 - Pre-built code allowed? → `____`
 - USB-C link setup method / Ethernet direct allowed? → `____`
 - USB drive contents (ZETIC packages?) → `____`
@@ -1197,6 +1201,8 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D13 | Thinking off, temperature 0, `max_tokens` 768 | SDK default; repeatable; starter rule: cap every call |
 | D14 | JSONL decision log + `gate()` in code + watch mode | Judges must see inputs/decisions/actions/errors; flagship Always-On track; starter rule "code authorizes actions" |
 | D15 | Own repo + vendored starter files (`zetic_run.py`, `offline_audit.py`, `preflight.sh`, MIT) | Keeps our layout; reuses the judge-authored, board-tested tooling |
+| D16 | Split the Python app into `app.py` shell and `pipeline.py` model boundary | The shared-file ownership split in §0 needed a stable interface while the repository had no implementation; §10 response shapes remain unchanged. Rehan provided the mock-compatible adapter; Isaac can replace its runtime code. |
+| D17 | UI JavaScript syntax checked with Node; Python execution pending | This Windows workspace has no installed Python or WSL, so `py_compile` and §14.2 cannot be run here. No board performance or NPU evidence is claimed. |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---
