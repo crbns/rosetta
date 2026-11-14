@@ -43,7 +43,6 @@ input[type=text]::placeholder{color:var(--muted);opacity:.7}
 .chips button[aria-pressed=true]{background:var(--well);border-color:var(--well);color:var(--ink)}
 .reading{min-width:0}
 #empty{font:22px/1.5 var(--read);color:var(--muted);max-width:30em;margin:48px 0 0}
-#empty kbd{font:inherit;font-size:.8em;border:1px solid var(--line);border-radius:6px;padding:0 6px}
 section.part{margin-top:40px}
 .banner{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 20px;border-radius:12px;padding:12px 18px;margin-bottom:28px;background:var(--t0)}
 .s0{background:var(--t0);--sev:var(--s0)}.s1{background:var(--t1);--sev:var(--s1)}.s2{background:var(--t2);--sev:var(--s2)}.s3{background:var(--t3);--sev:var(--s3)}.s4{background:var(--t4);--sev:var(--s4)}
@@ -104,7 +103,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);max-height:30
 <label class="field">Ask about it<input id="question" type="text" placeholder="Can I hike this afternoon?"></label>
 </section>
 <section class="reading" aria-live="polite">
-<p id="empty">Point the camera at a sign, notice or medicine label and press Scan, or <kbd>space</kbd>. LFM3-VL reads and translates it on this board, with no network, then d1 marks the lines that matter.</p>
+<p id="empty">Take a photo of a sign or label to translate it.</p>
 <div id="result" class="hidden">
 <div id="banner" class="banner hidden"></div>
 <p id="decisionError" class="hidden muted">The decision model is unavailable. Showing the translation only.</p>
