@@ -41,7 +41,14 @@ def main():
             if args.fail_every and count % args.fail_every == 0:
                 sys.exit(1)
             time.sleep(max(0, args.delay))
-            if args.kind == "vlm":
+            if args.kind == "vlm" and "Respond with ONLY this JSON" not in req.get("system", ""):
+                asked = req.get("prompt", "").rsplit("User:", 1)[-1].replace("Assistant:", "").strip()
+                out = {"id": req.get("id"), "status": "Ok", "finish": "Stop",
+                       "text": f"(mock) You asked: {asked} The sign says to descend before 14:00 "
+                               "and that there is no phone signal on the route.",
+                       "usage": {"prompt_rows": 900, "completion_tokens": 40},
+                       "timings": {"ttft_ms": 190, "tokens_per_second": 57.0}}
+            elif args.kind == "vlm":
                 out = {"id": req.get("id"), "status": "Ok", "text": "```json\n" + json.dumps(VLM) + "\n```",
                        "finish": "Stop", "usage": {"prompt_rows": 700, "cached_rows": 420,
                                                    "completion_tokens": 260},

@@ -20,6 +20,7 @@ import pipeline
 
 ROOT = Path(__file__).resolve().parent
 LOG_FILE = ROOT / "logs" / "rosetta.jsonl"
+CHAT_LOG_FILE = ROOT / "logs" / "chat.jsonl"   # follow-up Q&A; kept out of rosetta.jsonl (one line per scan)
 IMAGE_DIR = ROOT / "logs" / "img"
 SHM_DIR = Path(os.environ.get("SHM_DIR", "/dev/shm/rosetta" if os.path.isdir("/dev/shm") else str(Path(tempfile.gettempdir()) / "rosetta")))
 CROP = os.environ.get("CROP", "center")
@@ -189,6 +190,49 @@ def run_scan(payload, trigger="button"):
         scan_lock.release()
 
 
+def _scan_context(sid):
+    """Translation the chat answers from: the latest result if it matches, else the scan's JSONL proposal."""
+    with state_lock:
+        if latest.get("scan_id") == sid:
+            return {k: latest.get(k) for k in ("summary", "lines", "unreadable")}
+    if LOG_FILE.exists():
+        for line in reversed(LOG_FILE.read_text(encoding="utf-8").splitlines()):
+            try: rec = json.loads(line)
+            except json.JSONDecodeError: continue
+            if rec.get("scan_id") == sid:
+                return ((rec.get("vlm") or {}).get("proposal")) or {}
+    raise ValueError(f"scan {sid} not found")
+
+
+def run_ask(payload):
+    sid = int(payload.get("scan_id") or 0)
+    question = str(payload.get("question") or "").strip()[:500]
+    if sid <= 0: raise ValueError("scan_id is required")
+    if not question: raise ValueError("question is empty")
+    image = IMAGE_DIR / f"{sid}.png"
+    if not image.exists(): raise ValueError(f"scan {sid} not found")
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+    context = _scan_context(sid)
+    if not scan_lock.acquire(blocking=False): raise RuntimeError("busy scanning; ask again in a moment")
+    try:
+        try:
+            out = pipeline.ask_about(str(image), context, history, question)
+            errors = out["_vlm"]["errors"]
+        except Exception as exc:
+            out, errors = {"error": f"vlm: {exc}"}, [f"vlm: {exc}"]
+    finally:
+        scan_lock.release()
+    v = out.get("_vlm") or {}
+    record = {"ts": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="milliseconds"),
+              "scan_id": sid, "question": question, "answer": out.get("answer", ""),
+              "vlm": {k: v.get(k) for k in ("mode", "seconds", "ttft_ms", "tok_s", "completion_tokens", "finish")},
+              "errors": errors}
+    CHAT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with log_lock, CHAT_LOG_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n"); handle.flush(); os.fsync(handle.fileno())
+    return dict(out, scan_id=sid, question=question)
+
+
 def watch_loop():
     previous = scanned = None
     stable_since = None
@@ -235,11 +279,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
             elif url.path == "/status":
                 with state_lock: camera, watch = camera_ok, watch_on
-                self.json_response(200, dict(pipeline.status(), server_camera=camera, watch=watch))
+                self.json_response(200, dict(pipeline.status(), server_camera=camera, watch=watch, scanning=scan_lock.locked()))
             elif url.path == "/latest":
                 after = int(parse_qs(url.query).get("after", [0])[0])
                 with state_lock: result = latest if latest.get("scan_id", 0) > after else {}
-                self.json_response(200, result)
+                self.json_response(200, dict(result, scanning=scan_lock.locked()))
             elif url.path == "/log":
                 n = min(100, max(1, int(parse_qs(url.query).get("n", [20])[0])))
                 records = []
@@ -281,6 +325,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict): raise ValueError("expected JSON object")
             if self.path == "/scan":
                 result = run_scan(payload, "upload" if payload.get("image") else "button")
+                self.json_response(502 if result.get("error") else 200, result)
+            elif self.path == "/ask":
+                result = run_ask(payload)
                 self.json_response(502 if result.get("error") else 200, result)
             elif self.path == "/watch":
                 with state_lock: watch_on = bool(payload.get("on"))
