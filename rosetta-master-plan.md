@@ -452,16 +452,22 @@ class Engine:
 
 ### 9.3 Step 1: read & translate (reference, use verbatim)
 ```python
-SYSTEM_PROMPT = """You are an offline translator running entirely on a small device with no internet connection.
+SYSTEM_PROMPT = """You are an offline translator on a small device with no internet connection.
 A traveler who cannot read the local language shows you a photo of a sign, notice, menu, label, ticket, form or screen.
 
 Rules:
-1. Read ALL text in the image, top to bottom, and translate it into clear, natural English, one entry per line or item.
+1. Read ALL text in the image, top to bottom, and translate it into clear, natural English. One entry in "lines" per line or item, in the order it appears. At most 24 entries: merge tiny fragments, skip repeated decoration.
 2. Keep every number, price, time, date, distance and unit exactly as written. Convert unfamiliar digits (Thai, Arabic-Indic, etc.) to 0-9.
-3. If any text is in a script or language you cannot read confidently, DO NOT guess or invent a translation. Describe it in "unreadable" (e.g. "Top line: Tibetan script, cannot read").
-4. If the traveler asked a question, answer it in "answer" using only what the text says; otherwise "".
-5. Respond with ONLY this JSON object, no markdown:
-{"languages": ["..."], "summary": "one short sentence saying what this is", "lines": ["English line 1", "English line 2", "..."], "unreadable": ["..."], "answer": ""}"""
+3. If any text is in a script or language you cannot read confidently, DO NOT guess or invent a translation. Describe it in "unreadable" instead, naming the script if you recognize it (e.g. "Top line: unknown script, cannot read"). Still translate every other line you can read.
+4. Text already in English: copy it into "lines" as written. No readable text at all: "lines" is [] and "summary" says what the photo shows.
+5. If the traveler asked a question, answer it in "answer" using only what the text says; otherwise "".
+6. Use [] for an empty list. Never output placeholders such as "...".
+
+Reply with ONLY one JSON object: no markdown, nothing before or after it. Every value is a string or a list of strings:
+{"languages": ["source language name"], "summary": "one short sentence saying what this is", "lines": ["first English line", "second English line"], "unreadable": [], "answer": ""}"""
+# D29: pipeline.py also drops echoed template text (_PLACEHOLDERS) and parse_model_json repairs
+# trailing commas, smart quotes and output cut off by max_tokens (_close_truncated) before falling back
+# to raw lines. The original reference version follows.
 
 def parse_model_json(text: str) -> dict:
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I)
@@ -1161,7 +1167,7 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | `zetic_d1_cli serve` output shape differs | Med | Debug raw → patch `_normalize_answer`; or build `rosetta_d1` (our shape) |
 | d1 pass over budget (`ContextExceeded`) | Low (0.2.2) / Med (0.2.1) | Shorter line quotes, `MAX_LINES` ↓, `--set-size 8` |
 | VLM "translates" Tibetan anyway | Med | Strengthen rule 3; demo it last or skip; never claim Tibetan |
-| VLM returns non-JSON / truncated | Med | `MAX_TOKENS` ↑; parse_error path still shows lines |
+| VLM returns non-JSON / truncated | Med | Parser repairs cut-off JSON / trailing commas (D29); `MAX_TOKENS` ↑ (note `rosetta_vlm.cpp` sets `opt.max_new_tokens = 768`, may cap it; raise both); parse_error path still shows lines |
 | USB-C link method unclear / not working | Med | UART for control + Ethernet direct cable if OK'd, or board monitor (test first) |
 | Webcam not detected | Low | `CAMERA=/dev/videoN` → laptop camera via tunnel (§9.7) → Upload `samples/` |
 | Downloads not finished before the venue | Med | Stage at home (§11.0); USB stick copy; the board can also `hf download` during build Wi-Fi (`python3 -m venv .venv && .venv/bin/pip install huggingface_hub`) |
@@ -1219,6 +1225,7 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D26 | `tools/prop_key.json` (§14.4 as regexes) + `tools/make_labels.py` (prop auto-detect, Must-item acceptance report, drafts `labels.json`) + `tools/metrics.py` (README median table) | Turns B11 acceptance + B14 labels + §11.5 measurement into one command each at the board, instead of hand work during 7:20–7:40. Regexes are drafts: eyeball the printout |
 | D27 | UI: translation is the hero (large serif lines in sign order, rose/sand importance dots at ≥0.75 / ≥`IMPORTANCE_THRESHOLD`); severity shrinks to a one-line strip; separate "What matters" list removed; soft stone palette, system fonts only | Field users (e.g. remote medical teams) need to read the sign first; the dots carry d1's ranking without duplicating lines. No §10 contract change |
 | D28 | Follow-up chat (`POST /ask`) reuses the already-loaded LFM3-VL-2B with the scan's 512×512 image + translation as context; no separate text model | No extra download or second resident model (one model per process, NPU memory). Same rule-2 handling as step 1: capped (`CHAT_MAX_TOKENS`), validated, retry once, `finish≠Stop` flagged. Shares `scan_lock`, so chat never overlaps a scan on the NPU. Answers only from the sign; unreadable text stays unguessed |
+| D29 | Translation hardening (2026-11-13): `SYSTEM_PROMPT` no longer shows `"..."`/"English line 1" placeholders (2B model echoed them into lines/unreadable), rule-3 example is script-neutral (was "Tibetan", copied onto non-Tibetan signs) + "still translate every other line", new rules for English/no-text images and ≤24 lines, empty lists as `[]`. `parse_model_json` repairs trailing commas, smart quotes and max_tokens-truncated JSON (previously → `parse_error` with raw JSON fragments as lines); dict lines → their English field; placeholders filtered. Chat prompt: history as `Q:/A:` context + `Question:` (no fake `User:/Assistant:` turns), echoed role prefixes stripped | Reported translation failures; no board logs on the laptop, so these fix the likeliest parse/echo failure modes. Mock acceptance passes; re-check §14.4 Must items on the board |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---

@@ -41,8 +41,8 @@ def main():
             if args.fail_every and count % args.fail_every == 0:
                 sys.exit(1)
             time.sleep(max(0, args.delay))
-            if args.kind == "vlm" and "Respond with ONLY this JSON" not in req.get("system", ""):
-                asked = req.get("prompt", "").rsplit("User:", 1)[-1].replace("Assistant:", "").strip()
+            if args.kind == "vlm" and '"lines"' not in req.get("system", ""):    # chat (/ask), not a scan
+                asked = req.get("prompt", "").rsplit("Question:", 1)[-1].strip()
                 out = {"id": req.get("id"), "status": "Ok", "finish": "Stop",
                        "text": f"(mock) You asked: {asked} The sign says to descend before 14:00 "
                                "and that there is no phone signal on the route.",

@@ -189,16 +189,66 @@ def status():
 # =====================================================================================
 # [Isaac] Step 1: read & translate (plan §9.3, reference)
 # =====================================================================================
-SYSTEM_PROMPT = """You are an offline translator running entirely on a small device with no internet connection.
+SYSTEM_PROMPT = """You are an offline translator on a small device with no internet connection.
 A traveler who cannot read the local language shows you a photo of a sign, notice, menu, label, ticket, form or screen.
 
 Rules:
-1. Read ALL text in the image, top to bottom, and translate it into clear, natural English, one entry per line or item.
+1. Read ALL text in the image, top to bottom, and translate it into clear, natural English. One entry in "lines" per line or item, in the order it appears. At most 24 entries: merge tiny fragments, skip repeated decoration.
 2. Keep every number, price, time, date, distance and unit exactly as written. Convert unfamiliar digits (Thai, Arabic-Indic, etc.) to 0-9.
-3. If any text is in a script or language you cannot read confidently, DO NOT guess or invent a translation. Describe it in "unreadable" (e.g. "Top line: Tibetan script, cannot read").
-4. If the traveler asked a question, answer it in "answer" using only what the text says; otherwise "".
-5. Respond with ONLY this JSON object, no markdown:
-{"languages": ["..."], "summary": "one short sentence saying what this is", "lines": ["English line 1", "English line 2", "..."], "unreadable": ["..."], "answer": ""}"""
+3. If any text is in a script or language you cannot read confidently, DO NOT guess or invent a translation. Describe it in "unreadable" instead, naming the script if you recognize it (e.g. "Top line: unknown script, cannot read"). Still translate every other line you can read.
+4. Text already in English: copy it into "lines" as written. No readable text at all: "lines" is [] and "summary" says what the photo shows.
+5. If the traveler asked a question, answer it in "answer" using only what the text says; otherwise "".
+6. Use [] for an empty list. Never output placeholders such as "...".
+
+Reply with ONLY one JSON object: no markdown, nothing before or after it. Every value is a string or a list of strings:
+{"languages": ["source language name"], "summary": "one short sentence saying what this is", "lines": ["first English line", "second English line"], "unreadable": [], "answer": ""}"""
+
+# Template/placeholder text a small model may echo back verbatim; dropped from the parsed output.
+_PLACEHOLDERS = {"", "...", "…", "source language name", "first english line", "second english line",
+                 "english line 1", "english line 2", "one short sentence saying what this is"}
+
+
+def _is_placeholder(s):
+    return str(s).strip().strip('."\'').strip().lower() in _PLACEHOLDERS or not str(s).strip(" .…")
+
+
+def _close_truncated(s):
+    """Close a JSON object cut off mid-way (finish=Length): end an open string, drop a dangling
+    key/comma/colon, then close every open [ and {. Best effort; caller still validates with json.loads."""
+    stack, in_str, esc = [], False, False
+    for ch in s:
+        if in_str:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': in_str = False
+        elif ch == '"': in_str = True
+        elif ch in "{[": stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack: stack.pop()
+    out = s[:-1] if esc else s                                # never end on a lone backslash
+    if in_str:
+        out += '"'
+    out = re.sub(r"[\s,:]+$", "", out)
+    if stack and stack[-1] == "}":                            # `{"a": "b", "key"` → key with no value
+        out = re.sub(r'([{,])\s*"[^"]*"$', r"\1", out)
+        out = re.sub(r"[\s,]+$", "", out)
+    return out + "".join(reversed(stack))
+
+
+def _json_object(body):
+    """json.loads with light repairs small models need: smart quotes, trailing commas, truncation.
+    Returns (dict, repaired) or (None, False)."""
+    fixed = re.sub(r",\s*([}\]])", r"\1", body.replace("“", '"').replace("”", '"'))
+    for i, cand in enumerate((body, fixed, _close_truncated(fixed))):
+        try:
+            out = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(out, dict):
+            return out, i > 0
+    return None, False
+
+
+_JSON_KEY = re.compile(r'^"?(languages|summary|lines|unreadable|answer)"?\s*:\s*', re.I)
 
 
 def parse_model_json(text: str) -> dict:
@@ -208,14 +258,21 @@ def parse_model_json(text: str) -> dict:
     if fence:
         cleaned = fence.group(1)
     start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            out = json.loads(cleaned[start:end + 1])
-            if isinstance(out, dict):
-                return out
-        except json.JSONDecodeError:
-            pass
-    return {"lines": [l for l in cleaned.strip().splitlines() if l.strip()], "parse_error": True}
+    if start != -1:
+        out, repaired = _json_object(cleaned[start:end + 1]) if end > start else (None, False)
+        if out is None:                                       # no closing brace / bad tail: try the whole rest
+            out, repaired = _json_object(cleaned[start:])
+            repaired = repaired or out is not None
+        if out is not None:
+            if repaired:
+                out["repaired"] = True
+            return out
+    raw = []                                                  # last resort: show text lines minus JSON syntax
+    for l in cleaned.splitlines():
+        l = _JSON_KEY.sub("", l.strip().lstrip("{[,").strip()).strip(" \t,[]{}\"`")
+        if l and l.lower() != "json":
+            raw.append(l)
+    return {"lines": raw, "parse_error": True}
 
 
 def build_prompt(about, question):
@@ -235,12 +292,19 @@ def _str_list(x):
         x = [x]
     out = []
     for item in x:
-        if isinstance(item, (dict, list)):
+        if isinstance(item, dict):                            # {"original": ..., "english": ...} → the English
+            item = next((item[k] for k in ("english", "translation", "en", "text", "line") if item.get(k)),
+                        json.dumps(item, ensure_ascii=False))
+        elif isinstance(item, list):
             item = json.dumps(item, ensure_ascii=False)
         s = str(item).strip()
         if s:
             out.append(s)
     return out
+
+
+def _clean_list(x):
+    return [s for s in _str_list(x) if not _is_placeholder(s)]
 
 
 def _vlm_engine(prompt, png_path, system=None, max_tokens=None):
@@ -326,18 +390,21 @@ def read_and_translate(png_path, about="", question=""):
     truncated = (r.get("finish") or "Stop") != "Stop"
     if truncated:
         errors.append(f"vlm finish={r.get('finish')} (hit max_tokens={MAX_TOKENS}?)")
-    lines = _str_list(parsed.get("lines"))[:MAX_LINES]
+    lines = _clean_list(parsed.get("lines"))[:MAX_LINES]
+    summary = str(parsed.get("summary") or "").strip()
     out = {
-        "languages": _str_list(parsed.get("languages")),
-        "summary": str(parsed.get("summary") or "").strip(),
+        "languages": _clean_list(parsed.get("languages")),
+        "summary": "" if _is_placeholder(summary) else summary,
         "lines": lines,
-        "unreadable": _str_list(parsed.get("unreadable")),
+        "unreadable": _clean_list(parsed.get("unreadable")),
         "answer": str(parsed.get("answer") or "").strip(),
         "parse_error": bool(parsed.get("parse_error")),
         "truncated": truncated,
     }
     if out["parse_error"]:
         errors.append("vlm output was not clean JSON; showing raw lines")
+    elif parsed.get("repaired"):
+        errors.append("vlm JSON was malformed or cut off; repaired")
     out["_vlm"] = {
         "mode": VLM_MODE, "seconds": round(time.time() - t0, 3),
         "ttft_ms": r.get("ttft_ms"), "tok_s": r.get("tok_s"), "completion_tokens": r.get("completion_tokens"),
@@ -376,9 +443,10 @@ def build_chat_prompt(context, history, question):
     if unreadable:
         parts.append("Unreadable (do not guess): " + "; ".join(unreadable))
     turns = [t for t in (history or []) if isinstance(t, dict) and t.get("q") and t.get("a")][-CHAT_TURNS:]
-    for t in turns:
-        parts.append(f"User: {str(t['q'])[:500]}\nAssistant: {str(t['a'])[:800]}")
-    parts.append(f"User: {question}\nAssistant:")
+    if turns:   # history as quoted context, not fake chat turns (the chat template already adds the assistant turn)
+        parts.append("Earlier questions:\n" + "\n".join(f"Q: {str(t['q'])[:500]}\nA: {str(t['a'])[:800]}"
+                                                       for t in turns))
+    parts.append(f"Question: {question}")
     return "\n\n".join(parts)
 
 
@@ -409,6 +477,8 @@ def ask_about(png_path, context, history, question):
         raise EngineError("vlm", errors[-1] if errors else "no response")
     text = re.sub(r"<think>.*?</think>", "", r["text"], flags=re.S | re.I)
     text = re.sub(r"^.*?</think>", "", text, flags=re.S | re.I).strip()
+    text = re.sub(r"^(assistant|answer|a)\s*:\s*", "", text, flags=re.I)    # echoed role/label prefix
+    text = re.split(r"\n\s*(?:user|question|q)\s*:", text, maxsplit=1, flags=re.I)[0].strip()   # invented next turn
     truncated = (r.get("finish") or "Stop") != "Stop"
     if truncated:
         errors.append(f"chat finish={r.get('finish')} (hit max_tokens={CHAT_MAX_TOKENS}?)")
