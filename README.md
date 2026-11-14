@@ -24,7 +24,7 @@ Open <http://127.0.0.1:8000> (through an SSH tunnel when running on the board). 
 ## Implementation status
 
 - **Done, verified on a Mac with mock engines:** HTTP/camera/log shell (`app.py`), model pipeline + engine supervisor (`pipeline.py`), single-file UI (`index.html`), watch mode. Plan §14.2 mock acceptance passes with both d1 response shapes, engine crash recovery (`--fail-every 3`) and one JSONL line per scan. `tools/offline_audit.py .`: 0 errors.
-- **Not yet verified:** execution on the IQ9 NPU, real model output quality, and the board metrics below. Until then, nothing here claims NPU numbers.
+- **Verified on the IQ9-9075:** six real sample scans (IDs 7–12) through the app API with `VLM_MODE=cli` and the d1 serve process; both models returned results and the SDK reported Hexagon v73 loads. Full English translation quality remains unverified: several scans retained source-language lines after translation-pass failures.
 - `samples/`: 512×512 PNGs of every prop (upload fallback, smoke-test inputs), plus the source PDFs.
 
 ## Tools
@@ -39,16 +39,16 @@ Open <http://127.0.0.1:8000> (through an SSH tunnel when running on the board). 
 
 ## Metrics
 
-_Measured on the board, medians of ≥5 scans. To be filled in with `python3 tools/metrics.py --since <first real scan> --skip-first --url http://127.0.0.1:8000`._
+_Measured on the IQ9-9075, Ixian Hexagon SDK 0.2.2, VLM_MODE=cli, medians of 5 scans (scan_id 7–12, first scan skipped)._
 
 | Metric | Value |
 |---|---|
-| VLM read (s/scan) | — |
-| TTFT (ms) | — |
-| Decode (tok/s) | — |
-| d1 (s/scan, passes) | — |
-| End-to-end (s) | — |
-| Peak RSS VLM / d1 (MB) | — |
+| VLM read (s/scan) | 30.86 (n=5) |
+| TTFT (ms) | 311 (n=5) |
+| Decode (tok/s) | 55.2 (n=5) |
+| d1 (s/scan, passes) | 0.61 s, 1 pass (n=5) |
+| End-to-end (s) | 31.40 (n=5) |
+| Peak RSS VLM / d1 (MB) | not measured / 463 |
 
 Runtime: ZETIC Ixian Hexagon SDK 0.2.2 (0.2.1 fallback). Models: `ZETIC-ai/LFM3-VL-2B-IQ9` and `ZETIC-ai/d1-2B-IQ9`, precision as shipped in those IQ9 packages. Numbers above are filled only from our own board runs; none are quoted from vendor docs.
 
