@@ -911,13 +911,14 @@ Internals may change; **these may not** unless `index.html` and this section are
 `decision` may be `null` (`DECIDER=none`) or `{"error": "..."}`. Errors: 400 / 502 / 503 / 500 as `{"error": "..."}`.
 
 ### 10.2 `GET /status`
-`{"server_camera": bool, "watch": bool, "vlm_mode": "engine|cli|mock", "decider": "zetic|none", "severity_levels": [5 labels], "importance_threshold": 0.5, "engines": {"vlm": {<ready event>, "peak_rss_mb": int, "alive": bool}, "d1": {...}}}`
+`{"server_camera": bool, "watch": bool, "scanning": bool, "vlm_mode": "engine|cli|mock", "decider": "zetic|none", "severity_levels": [5 labels], "importance_threshold": 0.5, "engines": {"vlm": {<ready event>, "peak_rss_mb": int, "alive": bool}, "d1": {...}}}`
 
 ### 10.3 Other routes
 - `GET /stream` → MJPEG; 404 JSON if there's no server camera.
 - `GET /log?n=20` → `{"records": [last n JSONL records]}`.
 - `POST /watch {"on": bool}` → `{"watch": bool}`.
-- `GET /latest?after=<scan_id>` → the newest `/scan`-shaped result with `scan_id > after`, or `{}`.
+- `GET /latest?after=<scan_id>` → the newest `/scan`-shaped result with `scan_id > after`, or `{}`; both carry `"scanning": bool` (a scan holds `scan_lock`) so the UI shows a loading state for watch-mode scans too.
+- `POST /ask {"scan_id": int, "question": str, "history": [{"q", "a"}]}` → `{"scan_id", "question", "answer", "truncated", "_vlm": {mode, seconds, ttft_ms, tok_s, completion_tokens, finish, errors}}`. Follow-up chat about a scan: re-sends `logs/img/<scan_id>.png` to the **same resident VLM** with `CHAT_SYSTEM_PROMPT` + the scan's translation + last 4 turns. `400` bad/missing scan or empty question, `503` while a scan holds the NPU, `502` VLM failure. One line per question in `logs/chat.jsonl` (kept out of `rosetta.jsonl`).
 
 ### 10.4 app ↔ VLM engine (JSON Lines over stdin/stdout)
 - Ready (first line): `{"event":"ready","model","target","nsp_count","soc","sdk","package","max_context"}`
@@ -940,6 +941,7 @@ Internals may change; **these may not** unless `index.html` and this section are
 | `D1_CMD` | `$IXIAN_SDK/bin/zetic_d1_cli serve --model $D1_MODEL` | add `--set-size 8` on SDK 0.2.1; alt `engine/build/rosetta_d1 $D1_MODEL` |
 | `DECIDER` | `zetic` | `zetic` · `none` |
 | `MAX_TOKENS` | `768` | cap; raise if `finish=Length` on dense signs |
+| `CHAT_MAX_TOKENS` | `256` | cap for `/ask` answers |
 | `MAX_LINES` | `24` | VLM lines kept = d1 line questions (≤ 2 passes) |
 | `THINK` | `0` | `1` → `enable_thinking` (slower; only if quality needs it) |
 | `CROP` | `center` | `center` · `letterbox` |
@@ -1215,6 +1217,8 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D24 | `app.py` resumes `scan_id` from the max in `logs/rosetta.jsonl` at startup; JSONL record gains `metrics: {total_s}` (additive) | Restarts reset ids to 1 → `logs/img/N.png` overwritten, duplicate ids broke `calibrate.py` labels; README end-to-end median needs total_s in the log |
 | D25 | `samples/*_512.png` (12 props + `notext_512.png`) rendered from the prop PDFs: page → trim to the sign → pad square with page bg → 512×512 RGB PNG | §9.7 upload safety net + §14.1 smoke-test inputs (`tibet_512.png`). Clean renders = best case; the webcam will be worse |
 | D26 | `tools/prop_key.json` (§14.4 as regexes) + `tools/make_labels.py` (prop auto-detect, Must-item acceptance report, drafts `labels.json`) + `tools/metrics.py` (README median table) | Turns B11 acceptance + B14 labels + §11.5 measurement into one command each at the board, instead of hand work during 7:20–7:40. Regexes are drafts: eyeball the printout |
+| D27 | UI: translation is the hero (large serif lines in sign order, rose/sand importance dots at ≥0.75 / ≥`IMPORTANCE_THRESHOLD`); severity shrinks to a one-line strip; separate "What matters" list removed; soft stone palette, system fonts only | Field users (e.g. remote medical teams) need to read the sign first; the dots carry d1's ranking without duplicating lines. No §10 contract change |
+| D28 | Follow-up chat (`POST /ask`) reuses the already-loaded LFM3-VL-2B with the scan's 512×512 image + translation as context; no separate text model | No extra download or second resident model (one model per process, NPU memory). Same rule-2 handling as step 1: capped (`CHAT_MAX_TOKENS`), validated, retry once, `finish≠Stop` flagged. Shares `scan_lock`, so chat never overlaps a scan on the NPU. Answers only from the sign; unreadable text stays unguessed |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---

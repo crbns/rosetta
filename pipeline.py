@@ -243,10 +243,10 @@ def _str_list(x):
     return out
 
 
-def _vlm_engine(prompt, png_path):
+def _vlm_engine(prompt, png_path, system=None, max_tokens=None):
     """VLM_MODE=engine|mock → resident engine (§10.4). Returns the internal response shape."""
-    r = VLM.call({"system": SYSTEM_PROMPT, "prompt": prompt, "images": [os.path.abspath(png_path)],
-                  "max_tokens": MAX_TOKENS, "temperature": 0, "think": THINK})
+    r = VLM.call({"system": system or SYSTEM_PROMPT, "prompt": prompt, "images": [os.path.abspath(png_path)],
+                  "max_tokens": max_tokens or MAX_TOKENS, "temperature": 0, "think": THINK})
     usage, tm = r.get("usage") or {}, r.get("timings") or {}
     return {"status": r.get("status", "Ok"), "error": r.get("error"), "text": r.get("text") or "",
             "reasoning": r.get("reasoning") or "", "finish": r.get("finish"),
@@ -255,13 +255,13 @@ def _vlm_engine(prompt, png_path):
             "prompt_rows": usage.get("prompt_rows"), "device_evidence": None, "model_load_ms": None}
 
 
-def _vlm_cli(prompt, png_path):
+def _vlm_cli(prompt, png_path, system=None, max_tokens=None):
     """VLM_MODE=cli → vendored tools/zetic_run.py one-shot (P0, no compile; reloads the model per call)."""
     if os.path.join(ROOT, "tools") not in sys.path:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
     import zetic_run                                          # vendored from the starter repo (MIT)
-    r = zetic_run.run(IXIAN_SDK, VL_MODEL, SYSTEM_PROMPT + "\n\n" + prompt, image=os.path.abspath(png_path),
-                      max_tokens=MAX_TOKENS, timeout=VLM_TIMEOUT)
+    r = zetic_run.run(IXIAN_SDK, VL_MODEL, (system or SYSTEM_PROMPT) + "\n\n" + prompt, image=os.path.abspath(png_path),
+                      max_tokens=max_tokens or MAX_TOKENS, timeout=VLM_TIMEOUT)
     tm = r.get("timings") or {}
     errs = [str(e) for e in (r.get("errors") or [])]
     # zetic_run sets ok=False on a length finish or a missing NSP evidence line: those are warnings for us
@@ -278,12 +278,12 @@ def _vlm_cli(prompt, png_path):
             "model_load_ms": tm.get("model_load_ms")}
 
 
-def _vlm_once(prompt, png_path):
+def _vlm_once(prompt, png_path, system=None, max_tokens=None):
     if VLM_MODE == "cli":
-        return _vlm_cli(prompt, png_path)
+        return _vlm_cli(prompt, png_path, system, max_tokens)
     if VLM is None:
         raise EngineError("vlm", f"unknown VLM_MODE={VLM_MODE!r}")
-    return _vlm_engine(prompt, png_path)
+    return _vlm_engine(prompt, png_path, system, max_tokens)
 
 
 def _validate(r):
@@ -345,6 +345,77 @@ def read_and_translate(png_path, about="", question=""):
         "device_evidence": r.get("device_evidence"), "raw": r["text"], "errors": errors,
     }
     return out
+
+
+# =====================================================================================
+# [Isaac] Step 1b: follow-up chat about a scan, same VLM + same 512x512 image (plan §10.7)
+# =====================================================================================
+CHAT_MAX_TOKENS = int(_env("CHAT_MAX_TOKENS", "256"))
+CHAT_TURNS = 4                                               # prior Q/A pairs kept in the prompt
+
+CHAT_SYSTEM_PROMPT = """You are an offline assistant running on a small device with no internet connection.
+The user has already scanned the photo shown and read its English translation. They now ask follow-up questions about it.
+
+Rules:
+1. Answer in plain English, in 1-3 short sentences. No JSON, no markdown.
+2. Use only what is in the photo and the translation. If the answer is not there, say the sign does not say.
+3. Keep numbers, times, prices and phone numbers exactly as written.
+4. Never translate or guess at text listed as unreadable.
+5. For medical or safety questions, repeat what the text says and suggest checking with a local person or professional when unsure."""
+
+
+def build_chat_prompt(context, history, question):
+    ctx = context or {}
+    parts = []
+    if ctx.get("summary"):
+        parts.append("What it is: " + ctx["summary"])
+    lines = _str_list(ctx.get("lines"))[:MAX_LINES]
+    if lines:
+        parts.append("Translation:\n" + "\n".join(f"{i}. {l}" for i, l in enumerate(lines, 1)))
+    unreadable = _str_list(ctx.get("unreadable"))
+    if unreadable:
+        parts.append("Unreadable (do not guess): " + "; ".join(unreadable))
+    turns = [t for t in (history or []) if isinstance(t, dict) and t.get("q") and t.get("a")][-CHAT_TURNS:]
+    for t in turns:
+        parts.append(f"User: {str(t['q'])[:500]}\nAssistant: {str(t['a'])[:800]}")
+    parts.append(f"User: {question}\nAssistant:")
+    return "\n\n".join(parts)
+
+
+def ask_about(png_path, context, history, question):
+    """Follow-up question about an already-scanned image. Same capped/validated/retry-once rules as step 1.
+    Returns {answer, truncated, _vlm}. Raises EngineError if the VLM is down or returns nothing usable."""
+    question = (question or "").strip()[:500]
+    if not question:
+        raise ValueError("question is empty")
+    prompt = build_chat_prompt(context, history, question)
+    t0, errors, r = time.time(), [], None
+    with PIPELINE_LOCK:
+        for attempt in (1, 2):
+            try:
+                r = _vlm_once(prompt, png_path, CHAT_SYSTEM_PROMPT, CHAT_MAX_TOKENS)
+            except EngineError:
+                raise
+            except Exception as e:
+                errors.append(f"chat attempt {attempt}: {'timeout' if isinstance(e, queue.Empty) else repr(e)}")
+                r = None
+                continue
+            err = _validate(r)
+            if err is None:
+                break
+            errors.append(f"chat attempt {attempt}: {err}")
+            r = None
+    if r is None:
+        raise EngineError("vlm", errors[-1] if errors else "no response")
+    text = re.sub(r"<think>.*?</think>", "", r["text"], flags=re.S | re.I)
+    text = re.sub(r"^.*?</think>", "", text, flags=re.S | re.I).strip()
+    truncated = (r.get("finish") or "Stop") != "Stop"
+    if truncated:
+        errors.append(f"chat finish={r.get('finish')} (hit max_tokens={CHAT_MAX_TOKENS}?)")
+    return {"answer": text, "truncated": truncated,
+            "_vlm": {"mode": VLM_MODE, "seconds": round(time.time() - t0, 3), "ttft_ms": r.get("ttft_ms"),
+                     "tok_s": r.get("tok_s"), "completion_tokens": r.get("completion_tokens"),
+                     "finish": r.get("finish"), "errors": errors}}
 
 
 # =====================================================================================
