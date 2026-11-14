@@ -257,9 +257,15 @@ def _vlm_cli(prompt, png_path):
     r = zetic_run.run(IXIAN_SDK, VL_MODEL, SYSTEM_PROMPT + "\n\n" + prompt, image=os.path.abspath(png_path),
                       max_tokens=MAX_TOKENS, timeout=VLM_TIMEOUT)
     tm = r.get("timings") or {}
-    errs = r.get("errors") or []
-    return {"status": "Ok" if r.get("ok") else "Error", "error": "; ".join(map(str, errs)) or None,
-            "text": r.get("text") or "", "reasoning": "", "finish": r.get("finish_reason"),
+    errs = [str(e) for e in (r.get("errors") or [])]
+    # zetic_run sets ok=False on a length finish or a missing NSP evidence line: those are warnings for us
+    # (parse + mark truncated / log it), not reasons to fail the scan.
+    soft = ("generation did not finish naturally", "missing current-request Hexagon")
+    fatal = [e for e in errs if not e.startswith(soft)]
+    finish = (r.get("finish_reason") or "").capitalize() or None          # cli reports "stop"/"length"
+    return {"status": "Ok" if not fatal and (r.get("text") or "").strip() else "Error",
+            "error": "; ".join(fatal or errs) or None, "warnings": [e for e in errs if e.startswith(soft)],
+            "text": r.get("text") or "", "reasoning": "", "finish": finish,
             "completion_tokens": r.get("completion_tokens"),
             "ttft_ms": tm.get("runtime_ttft_ms"), "tok_s": tm.get("runtime_decode_tok_s"),
             "prompt_rows": None, "device_evidence": r.get("device_evidence"),
@@ -309,6 +315,7 @@ def read_and_translate(png_path, about="", question=""):
     if r is None:
         raise EngineError("vlm", errors[-1] if errors else "no response")
 
+    errors.extend(f"vlm: {w}" for w in r.get("warnings") or [])
     parsed = parse_model_json(r["text"])
     truncated = (r.get("finish") or "Stop") != "Stop"
     if truncated:

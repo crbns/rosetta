@@ -924,7 +924,7 @@ Internals may change; **these may not** unless `index.html` and this section are
 ### 10.5 app ↔ d1 engine (JSON Lines; `zetic_d1_cli serve` format)
 - Ready: `{"event":"ready", ...}`
 - Request: `{"id": int, "state": str, "questions": {name: {"type": "noul|choice|score", "instructions": str, "criteria": {label: desc} | [levels]}}}`
-- Response: `{"id", "answers": {name: {...}} | [...], "passes"?, "usage"?, "status"?, "error"?}`. Normalize per §9.4.
+- Response: `{"id", "answers": {name: {...}} | [...], "passes"?, "usage"?, "status"?, "error"?}`. Normalize per §9.4. Real serve: dict `answers`, no `status` on success, `{"error"}` on failure (§16 D17).
 
 ### 10.6 Environment variables
 | Var | Default | Notes |
@@ -1171,7 +1171,7 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 - fastrpc rw OK after group change? → `____`
 - `info --verify` both models OK on SDK `____`? → `____`
 - VLM + d1 resident together on `v73`? → `____`
-- Real `zetic_d1_cli serve` response sample → paste into §16
+- Real `zetic_d1_cli serve` response sample → paste into §16 (expected shape in D17; open question: per-answer `probabilities` dict `{label:p}` or list?)
 - VLM s/scan (engine) `____` · (cli) `____` · TTFT `____` · tok/s `____` · d1 s/scan `____` · passes `____` · peak RSS VLM `____` d1 `____`
 - 512 center crop reads the props? Which fail? → `____`
 - Device evidence line copied → `____`
@@ -1197,6 +1197,12 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D13 | Thinking off, temperature 0, `max_tokens` 768 | SDK default; repeatable; starter rule: cap every call |
 | D14 | JSONL decision log + `gate()` in code + watch mode | Judges must see inputs/decisions/actions/errors; flagship Always-On track; starter rule "code authorizes actions" |
 | D15 | Own repo + vendored starter files (`zetic_run.py`, `offline_audit.py`, `preflight.sh`, MIT) | Keeps our layout; reuses the judge-authored, board-tested tooling |
+| D16 | `engine/*.cpp` + CMake used **verbatim**; compile-checked against the real SDK 0.2.2 headers (Apple clang 21, `-fsyntax-only`, exit 0, 2026-11-13 ~18:50) | No API drift between plan and headers. SDK bundles nlohmann/json 3.12.0, same as `engine/third_party` |
+| D17 | `zetic_d1_cli serve` shape (from 0.2.2 README, `samples/requests.jsonl`, binary strings; **not yet seen on board**): ready `{event,protocol:"zetic-d1-serve/1",model,target,load_ms,runtime,soc,sdk_version,runtime_commit,package_dir,max_rows,inputs}` (note `sdk_version`/`max_rows`, no `nsp_count`: d1 is always 1 NSP); response `{id,model,answers:{name:{type,noul,choice,choices,confidence,score,legend,probabilities}},usage:{input_tokens,output_tokens},passes,timings:{sdk_ms,…,prefill_ms,dsp_ms,…}}`; **no `status` on success**, errors as `{"error": …}`; serve `images` must be base64 data URLs (file paths rejected) | `decide()` treats a missing status as Ok, accepts dict or list answers; normalizer converts a score `probabilities` `{label: p}` dict into the 5-element list the UI bar expects |
+| D18 | `tools/zetic_run.run(sdk, model, prompt, *, image=None, audio=None, max_tokens=256, timeout=120)`; `max_tokens` 1..1024; `finish_reason` is **lowercase** (`stop`/`length`); `ok=False` on a length finish or a missing NSP evidence line | `app.py` cli mode capitalizes finish, treats "generation did not finish naturally" and "missing current-request Hexagon" as **warnings** (parse + `truncated` / logged), not scan failures |
+| D19 | JSONL `d1` record also carries the full per-line `importance` list (+ `importance_threshold`); `app.py` exposes `vlm_log()`, `d1_log()`, `scan_errors()` for `log_scan` | `tools/calibrate.py` needs every line's p, not just `top` |
+| D20 | VLM retried once on crash/timeout/empty; d1 also restarted + retried once on crash/timeout before falling back to `decision: {"error"}` | §12 rule 2 (retry at most once); a single serve DSP exit shouldn't cost the scan its banner |
+| D21 | `app.py` model pipeline wrapped in `analyze(png, about, question)` under a global `PIPELINE_LOCK` | Watch loop + button can't put two scans on the NPU at once (§12 rule 6) |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---

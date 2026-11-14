@@ -1,0 +1,7 @@
+{
+  "_comment": "scan_id (or logs/img stem) -> 1-based VLM line indices that MUST be flagged (plan §14.4). Copy to tools/labels.json and edit after scanning the props. Keys starting with _ are ignored.",
+  "12": [3, 4, 5],
+  "13": [2, 3],
+  "14": [4, 5],
+  "15": [2, 3, 7]
+}
