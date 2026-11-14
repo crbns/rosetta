@@ -1,553 +1,294 @@
-#!/usr/bin/env python3
-"""rosetta: offline sign translator + "what matters" triage on the Qualcomm IQ9.
-
-Shared file (plan §0/§12):
-  * [Isaac]  model/runtime pipeline: constants, Engine supervisor, read_and_translate (step 1),
-             decide + normalizer (step 2), gate, analyze, log-field helpers.
-  * [Rehan]  HTTP server, camera, image prep, watch loop, JSONL log writer, main().
-Pull before editing; keep diffs small; don't reformat the other half.
-"""
+"""rosetta local HTTP, camera and scan shell. Model functions live in pipeline.py."""
+import base64
+import datetime as dt
 import json
 import os
-import queue
-import re
-import shlex
-import subprocess
-import sys
+from pathlib import Path
 import threading
 import time
+import tempfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = np = None
 
-# =====================================================================================
-# [Isaac] Config (plan §10.6)
-# =====================================================================================
-def _env(name, default):
-    v = os.environ.get(name)
-    return default if v is None or v == "" else v
+import pipeline
 
-IXIAN_SDK = _env("IXIAN_SDK", os.path.join(ROOT, "sdk"))
-VL_MODEL = _env("VL_MODEL", "models/lfm3-vl-2b")
-D1_MODEL = _env("D1_MODEL", "models/d1-2b")
-VLM_MODE = _env("VLM_MODE", "engine")                       # engine | cli | mock
-VLM_CMD = _env("VLM_CMD", "python3 tools/mock_engine.py vlm" if VLM_MODE == "mock"
-               else f'engine/build/rosetta_vlm {shlex.quote(VL_MODEL)} "" 4096')
-D1_CMD = _env("D1_CMD", f"{shlex.quote(IXIAN_SDK + '/bin/zetic_d1_cli')} serve --model {shlex.quote(D1_MODEL)}")
-DECIDER = _env("DECIDER", "zetic")                          # zetic | none
-MAX_TOKENS = int(_env("MAX_TOKENS", "768"))
-MAX_LINES = int(_env("MAX_LINES", "24"))
-THINK = _env("THINK", "0") not in ("0", "false", "False", "no")
-ALERT_SEVERITY = int(_env("ALERT_SEVERITY", "3"))
-IMPORTANCE_THRESHOLD = float(_env("IMPORTANCE_THRESHOLD", "0.5"))   # placeholder until calibrated (§9.11)
-VLM_TIMEOUT = float(_env("VLM_TIMEOUT", "60"))
-D1_TIMEOUT = float(_env("D1_TIMEOUT", "20"))
-ENGINE_LOAD_TIMEOUT = float(_env("ENGINE_LOAD_TIMEOUT", "120"))
+ROOT = Path(__file__).resolve().parent
+LOG_FILE = ROOT / "logs" / "rosetta.jsonl"
+IMAGE_DIR = ROOT / "logs" / "img"
+SHM_DIR = Path(os.environ.get("SHM_DIR", "/dev/shm/rosetta" if os.path.isdir("/dev/shm") else str(Path(tempfile.gettempdir()) / "rosetta")))
+CROP = os.environ.get("CROP", "center")
+CAMERA = os.environ.get("CAMERA", "0")
+WATCH_CHANGE = float(os.environ.get("WATCH_CHANGE", "12"))
+WATCH_STABLE_S = float(os.environ.get("WATCH_STABLE_S", "1.2"))
+WATCH_SHARP = float(os.environ.get("WATCH_SHARP", "60"))
+MAX_UPLOAD = 12 * 1024 * 1024
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-
-
-# =====================================================================================
-# [Isaac] Engine supervisor (plan §9.2, reference)
-# =====================================================================================
-class EngineError(RuntimeError):
-    """A model engine is down, timed out, or returned an invalid answer. HTTP layer: 502 + engine name."""
-    def __init__(self, engine, msg):
-        super().__init__(f"{engine}: {msg}")
-        self.engine = engine
+state_lock = threading.RLock()
+scan_lock = threading.Lock()
+log_lock = threading.Lock()
+frame = None
+camera_ok = False
+watch_on = False
+latest = {}
+scan_id = 0
 
 
-class Engine:
-    """One ZETIC model per process (SDK limit). JSON Lines over stdin/stdout. Restarts on exit or timeout."""
-    def __init__(self, name, cmd, timeout):
-        self.name, self.cmd, self.timeout = name, cmd, timeout
-        self.proc, self.q, self.ready, self.n, self.lock = None, None, None, 0, threading.Lock()
-        self.last_error = None
+def to_model_image(img):
+    """BGR ndarray -> exactly 512x512 BGR."""
+    h, w = img.shape[:2]
+    if CROP == "center":
+        s = min(h, w); y, x = (h-s)//2, (w-s)//2
+        return cv2.resize(img[y:y+s, x:x+s], (512, 512), interpolation=cv2.INTER_AREA)
+    scale = 512 / max(h, w)
+    img = cv2.resize(img, (max(1, round(w*scale)), max(1, round(h*scale))), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((512, 512, 3), np.uint8)
+    y, x = (512-img.shape[0])//2, (512-img.shape[1])//2
+    canvas[y:y+img.shape[0], x:x+img.shape[1]] = img
+    return canvas
 
-    def _start(self):
-        # DSP may still be releasing after another NPU process exited (DeviceError ... map: 0x1):
-        # wait 3 s and retry the load once (plan §9.2).
-        for attempt in (1, 2):
-            try:
-                return self._start_once()
-            except Exception as e:
-                self.last_error = f"load failed: {e!r}"
-                print(f"[{self.name}] {self.last_error}" + ("; retrying in 3 s" if attempt == 1 else ""), flush=True)
-                if self.proc and self.proc.poll() is None:
-                    self.proc.kill()
-                self.proc = None
-                if attempt == 2:
-                    raise
-                time.sleep(3)
 
-    def _start_once(self):
-        env = dict(os.environ, LD_LIBRARY_PATH=f"{IXIAN_SDK}/lib:" + os.environ.get("LD_LIBRARY_PATH", ""))
-        self.proc = subprocess.Popen(shlex.split(self.cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=None, text=True, bufsize=1, env=env, cwd=ROOT)   # stderr → app console
-        self.q = queue.Queue()
-        threading.Thread(target=self._pump, args=(self.proc, self.q), daemon=True).start()
+def camera_loop():
+    global frame, camera_ok
+    source = int(CAMERA) if CAMERA.isdigit() else CAMERA
+    while True:
+        cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            with state_lock: camera_ok = False
+            cap.release(); time.sleep(3); continue
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         try:
-            self.ready = self._next(ENGINE_LOAD_TIMEOUT)          # first line: {"event": "ready", ...}
-        except queue.Empty:
-            raise RuntimeError(f"{self.name} engine: no ready line within {ENGINE_LOAD_TIMEOUT:.0f} s")
-        self.last_error = None
-        print(f"[{self.name}] ready: {self.ready}", flush=True)
-
-    @staticmethod
-    def _pump(proc, q):
-        for line in proc.stdout:
-            line = line.strip()
-            if line.startswith("{"):                          # skip any non-JSON chatter on stdout
-                try: q.put(json.loads(line))
-                except json.JSONDecodeError: pass
-        q.put(None)                                           # EOF: process exited
-
-    def _next(self, timeout):
-        msg = self.q.get(timeout=timeout)                     # raises queue.Empty on timeout
-        if msg is None:
-            raise RuntimeError(f"{self.name} engine exited")
-        return msg
-
-    def ensure(self):
-        with self.lock:
-            if self.proc is None or self.proc.poll() is not None:
-                self._start()
-
-    def call(self, req):
-        with self.lock:
-            try:
-                if self.proc is None or self.proc.poll() is not None:
-                    self._start()
-                self.n += 1
-                req = dict(req, id=self.n)
-                self.proc.stdin.write(json.dumps(req) + "\n"); self.proc.stdin.flush()
-                while True:
-                    msg = self._next(self.timeout)
-                    if msg.get("id") == req["id"]:
-                        return msg
-            except Exception as e:
-                self.last_error = "timeout" if isinstance(e, queue.Empty) else repr(e)
-                if self.proc and self.proc.poll() is None:
-                    self.proc.kill()                          # next call restarts cleanly
-                self.proc = None
-                raise
-
-    def peak_rss_mb(self):
-        try:
-            with open(f"/proc/{self.proc.pid}/status") as f:
-                for l in f:
-                    if l.startswith("VmHWM:"): return round(int(l.split()[1]) / 1024)
-        except Exception: return None
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def status(self):
-        """For GET /status engines.<name> (§10.2): ready event + peak_rss_mb + alive."""
-        return dict(self.ready or {}, peak_rss_mb=self.peak_rss_mb() if self.alive() else None,
-                    alive=self.alive(), cmd=self.cmd, last_error=self.last_error)
+            while True:
+                ok, next_frame = cap.read()
+                if not ok: break
+                with state_lock:
+                    frame = next_frame
+                    camera_ok = True
+        finally:
+            cap.release()
+            with state_lock: camera_ok = False
+        time.sleep(1)
 
 
-VLM = Engine("vlm", VLM_CMD, VLM_TIMEOUT) if VLM_MODE in ("engine", "mock") else None
-D1 = Engine("d1", D1_CMD, D1_TIMEOUT) if DECIDER != "none" else None
-PIPELINE_LOCK = threading.Lock()          # models run sequentially; never two scans on the NPU at once
+def model_png(image_data):
+    if image_data:
+        if not isinstance(image_data, str) or not image_data.startswith("data:image/png;base64,"):
+            raise ValueError("image must be a PNG data URL")
+        raw = base64.b64decode(image_data.partition(",")[2], validate=True)
+        if len(raw) > MAX_UPLOAD: raise ValueError("image is too large")
+        if len(raw) < 26 or not raw.startswith(b"\x89PNG\r\n\x1a\n"): raise ValueError("invalid PNG")
+        if cv2 is not None:
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+            if img is None: raise ValueError("invalid PNG image")
+            ok, encoded = cv2.imencode(".png", to_model_image(img))
+            if not ok: raise ValueError("could not encode image")
+            return bytes(encoded), "upload"
+        width, height = int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+        if (width, height) != (512, 512): raise ValueError("without OpenCV, upload a 512×512 PNG")
+        if raw[25] not in (2, 6): raise ValueError("upload an RGB or RGBA PNG")
+        return raw, "upload"
+    with state_lock:
+        current = frame.copy() if camera_ok and frame is not None else None
+    if current is None: raise LookupError("camera has no frame; upload a photo")
+    ok, encoded = cv2.imencode(".png", to_model_image(current))
+    if not ok: raise ValueError("could not encode camera frame")
+    return bytes(encoded), "webcam"
 
 
-def start_engines():
-    """Warm both engines sequentially (VLM first, then d1) in a background thread at startup."""
-    def warm():
-        for eng in (VLM, D1):
-            if eng is None:
-                continue
-            try:
-                eng.ensure()
-            except Exception as e:
-                print(f"[{eng.name}] failed to start: {e!r} (will retry on next scan)", flush=True)
-    t = threading.Thread(target=warm, name="engine-warmup", daemon=True)
-    t.start()
-    return t
-
-
-def engines_status():
-    out = {}
-    if VLM is not None:
-        out["vlm"] = VLM.status()
-    elif VLM_MODE == "cli":
-        out["vlm"] = {"mode": "cli", "model": VL_MODEL, "alive": True,
-                      "note": "zetic_lfm3_cli one-shot per scan (model reload each call)"}
-    if D1 is not None:
-        out["d1"] = D1.status()
-    return out
-
-
-# =====================================================================================
-# [Isaac] Step 1: read & translate (plan §9.3, reference)
-# =====================================================================================
-SYSTEM_PROMPT = """You are an offline translator running entirely on a small device with no internet connection.
-A traveler who cannot read the local language shows you a photo of a sign, notice, menu, label, ticket, form or screen.
-
-Rules:
-1. Read ALL text in the image, top to bottom, and translate it into clear, natural English, one entry per line or item.
-2. Keep every number, price, time, date, distance and unit exactly as written. Convert unfamiliar digits (Thai, Arabic-Indic, etc.) to 0-9.
-3. If any text is in a script or language you cannot read confidently, DO NOT guess or invent a translation. Describe it in "unreadable" (e.g. "Top line: Tibetan script, cannot read").
-4. If the traveler asked a question, answer it in "answer" using only what the text says; otherwise "".
-5. Respond with ONLY this JSON object, no markdown:
-{"languages": ["..."], "summary": "one short sentence saying what this is", "lines": ["English line 1", "English line 2", "..."], "unreadable": ["..."], "answer": ""}"""
-
-
-def parse_model_json(text: str) -> dict:
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I)
-    cleaned = re.sub(r"^.*?</think>", "", cleaned, flags=re.S | re.I)   # think block with no opening tag
-    fence = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.S)
-    if fence:
-        cleaned = fence.group(1)
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            out = json.loads(cleaned[start:end + 1])
-            if isinstance(out, dict):
-                return out
-        except json.JSONDecodeError:
-            pass
-    return {"lines": [l for l in cleaned.strip().splitlines() if l.strip()], "parse_error": True}
-
-
-def build_prompt(about, question):
-    user_text = []
-    if about:    user_text.append("About the traveler: " + about)
-    if question: user_text.append("Traveler's question: " + question)
-    user_text.append("Read and translate all text in this image. Respond with the JSON object only.")
-    return "\n".join(user_text)
-
-
-def _str_list(x):
-    if x is None:
-        return []
-    if isinstance(x, str):
-        x = x.splitlines()
-    if not isinstance(x, (list, tuple)):
-        x = [x]
-    out = []
-    for item in x:
-        if isinstance(item, (dict, list)):
-            item = json.dumps(item, ensure_ascii=False)
-        s = str(item).strip()
-        if s:
-            out.append(s)
-    return out
-
-
-def _vlm_engine(prompt, png_path):
-    """VLM_MODE=engine|mock → resident engine (§10.4). Returns the internal response shape."""
-    r = VLM.call({"system": SYSTEM_PROMPT, "prompt": prompt, "images": [os.path.abspath(png_path)],
-                  "max_tokens": MAX_TOKENS, "temperature": 0, "think": THINK})
-    usage, tm = r.get("usage") or {}, r.get("timings") or {}
-    return {"status": r.get("status", "Ok"), "error": r.get("error"), "text": r.get("text") or "",
-            "reasoning": r.get("reasoning") or "", "finish": r.get("finish"),
-            "completion_tokens": usage.get("completion_tokens"),
-            "ttft_ms": tm.get("ttft_ms"), "tok_s": tm.get("tokens_per_second"),
-            "prompt_rows": usage.get("prompt_rows"), "device_evidence": None, "model_load_ms": None}
-
-
-def _vlm_cli(prompt, png_path):
-    """VLM_MODE=cli → vendored tools/zetic_run.py one-shot (P0, no compile; reloads the model per call)."""
-    if os.path.join(ROOT, "tools") not in sys.path:
-        sys.path.insert(0, os.path.join(ROOT, "tools"))
-    import zetic_run                                          # vendored from the starter repo (MIT)
-    r = zetic_run.run(IXIAN_SDK, VL_MODEL, SYSTEM_PROMPT + "\n\n" + prompt, image=os.path.abspath(png_path),
-                      max_tokens=MAX_TOKENS, timeout=VLM_TIMEOUT)
-    tm = r.get("timings") or {}
-    errs = [str(e) for e in (r.get("errors") or [])]
-    # zetic_run sets ok=False on a length finish or a missing NSP evidence line: those are warnings for us
-    # (parse + mark truncated / log it), not reasons to fail the scan.
-    soft = ("generation did not finish naturally", "missing current-request Hexagon")
-    fatal = [e for e in errs if not e.startswith(soft)]
-    finish = (r.get("finish_reason") or "").capitalize() or None          # cli reports "stop"/"length"
-    return {"status": "Ok" if not fatal and (r.get("text") or "").strip() else "Error",
-            "error": "; ".join(fatal or errs) or None, "warnings": [e for e in errs if e.startswith(soft)],
-            "text": r.get("text") or "", "reasoning": "", "finish": finish,
-            "completion_tokens": r.get("completion_tokens"),
-            "ttft_ms": tm.get("runtime_ttft_ms"), "tok_s": tm.get("runtime_decode_tok_s"),
-            "prompt_rows": None, "device_evidence": r.get("device_evidence"),
-            "model_load_ms": tm.get("model_load_ms")}
-
-
-def _vlm_once(prompt, png_path):
-    if VLM_MODE == "cli":
-        return _vlm_cli(prompt, png_path)
-    if VLM is None:
-        raise EngineError("vlm", f"unknown VLM_MODE={VLM_MODE!r}")
-    return _vlm_engine(prompt, png_path)
-
-
-def _validate(r):
-    """§12 rule 2: reject status != Ok, zero tokens, empty or reasoning-only text. Returns error str or None."""
-    if str(r.get("status", "")).lower() != "ok":
-        return f"status {r.get('status')}: {r.get('error') or 'no detail'}"
-    if not (r.get("text") or "").strip():
-        return "reasoning-only output (no answer text)" if (r.get("reasoning") or "").strip() else "empty text"
-    ct = r.get("completion_tokens")
-    if ct is not None and ct <= 0:
-        return "zero completion tokens"
-    return None
-
-
-def read_and_translate(png_path, about="", question=""):
-    """512x512 PNG → {languages, summary, lines, unreadable, answer, parse_error, truncated, _vlm}.
-    Raises EngineError (→ HTTP 502) if the VLM is down or returns nothing usable after one retry."""
-    about, question = (about or "").strip(), (question or "").strip()
-    prompt = build_prompt(about, question)
-    t0, errors, r = time.time(), [], None
-    for attempt in (1, 2):                                    # retry at most once
-        try:
-            r = _vlm_once(prompt, png_path)
-        except EngineError:
-            raise
-        except Exception as e:
-            errors.append(f"vlm attempt {attempt}: {'timeout' if isinstance(e, queue.Empty) else repr(e)}")
-            r = None
-            continue
-        err = _validate(r)
-        if err is None:
-            break
-        errors.append(f"vlm attempt {attempt}: {err}")
-        r = None
-    if r is None:
-        raise EngineError("vlm", errors[-1] if errors else "no response")
-
-    errors.extend(f"vlm: {w}" for w in r.get("warnings") or [])
-    parsed = parse_model_json(r["text"])
-    truncated = (r.get("finish") or "Stop") != "Stop"
-    if truncated:
-        errors.append(f"vlm finish={r.get('finish')} (hit max_tokens={MAX_TOKENS}?)")
-    lines = _str_list(parsed.get("lines"))[:MAX_LINES]
-    out = {
-        "languages": _str_list(parsed.get("languages")),
-        "summary": str(parsed.get("summary") or "").strip(),
-        "lines": lines,
-        "unreadable": _str_list(parsed.get("unreadable")),
-        "answer": str(parsed.get("answer") or "").strip(),
-        "parse_error": bool(parsed.get("parse_error")),
-        "truncated": truncated,
-    }
-    if out["parse_error"]:
-        errors.append("vlm output was not clean JSON; showing raw lines")
-    out["_vlm"] = {
-        "mode": VLM_MODE, "seconds": round(time.time() - t0, 3),
-        "ttft_ms": r.get("ttft_ms"), "tok_s": r.get("tok_s"), "completion_tokens": r.get("completion_tokens"),
-        "finish": r.get("finish"), "model_load_ms": r.get("model_load_ms"),
-        "device_evidence": r.get("device_evidence"), "raw": r["text"], "errors": errors,
-    }
-    return out
-
-
-# =====================================================================================
-# [Isaac] Step 2: decide what matters (plan §9.4, reference)
-# =====================================================================================
-CATEGORIES = [
-    ("safety warning", "danger, hazard, health or safety risk"),
-    ("rule or prohibition", "something forbidden or required, permits, fines, towing, legal"),
-    ("transport or directions", "routes, closures, schedules, platforms, roads, detours"),
-    ("medicine or health", "dosage, drug use, symptoms, medical instructions"),
-    ("prices or fees", "costs, charges, tickets, payment"),
-    ("food or menu", "dishes, ingredients, allergens, food labels"),
-    ("opening hours or schedule", "times, dates, opening or closing"),
-    ("general information", "welcome, descriptions, advertising, anything else"),
-]
-SEVERITY = [
-    "Just information",
-    "Good to know",
-    "Caution: affects your plans, time or money",
-    "Warning: legal trouble or health risk if ignored",
-    "Danger: risk of serious injury or death",
-]
-
-
-def build_questions(lines, about):
-    """d1 native schema: {name: {type: noul|choice|score, instructions, criteria}}. Order = pass order."""
-    who = f" The traveler says: {about.strip()}." if about.strip() else ""
-    qs = {
-        "category": {"type": "choice",
-                     "instructions": "What is this text mainly about, from a traveler's point of view?",
-                     "criteria": {v: d for v, d in CATEGORIES}},
-        "severity": {"type": "score",
-                     "instructions": "How serious are the consequences for a traveler who ignores or misunderstands this text?" + who,
-                     "criteria": SEVERITY},
-        "action":   {"type": "noul",
-                     "instructions": "Does this text require the reader to do something, or forbid them from doing something?"},
-    }
-    if about.strip():
-        qs["personal"] = {"type": "noul",
-                          "instructions": f"Does anything in this text specifically affect this traveler?{who}"}
-    for i, line in enumerate(lines[:MAX_LINES], 1):
-        qs[f"line_{i}"] = {"type": "noul",
-                           "instructions": (f'Line {i}: "{line[:160]}". Must the traveler notice or act on this line: '
-                                            f"a danger, prohibition, requirement, deadline, closure, fee, dosage limit, "
-                                            f"health risk, or something that affects them personally?{who}")}
-    return qs
-
-
-def _num(x):
-    try: return float(x)
-    except (TypeError, ValueError): return None
-
-
-def _normalize_answer(qtype, a):
-    """Tolerant of zetic_d1_cli serve, rosetta_d1 and HF shapes: noul/choice/score/legend/labels/probabilities/probs."""
-    if a is None: return None
-    if not isinstance(a, dict): a = {"value": a}
-    probs, labels = a.get("probabilities", a.get("probs")), a.get("labels")
-    if isinstance(probs, list) and isinstance(labels, list) and len(probs) == len(labels):
-        probs = dict(zip(labels, probs))
-    if qtype == "noul":
-        for k in ("noul", "p", "probability", "yes"):
-            v = _num(a.get(k))
-            if v is not None: return {"p": v}
-        if isinstance(probs, dict):
-            for k in ("yes", "true", "Yes", "True"):
-                if k in probs: return {"p": _num(probs[k])}
-        return None
-    if qtype == "choice":
-        v = a.get("choice", a.get("value", a.get("label")))
-        if v is None and isinstance(probs, dict) and probs:
-            v = max(probs, key=lambda k: _num(probs[k]) or 0)
-        return {"value": v, "confidence": _num(a.get("confidence")), "probabilities": probs}
-    if qtype == "score":
-        idx = next((_num(a.get(k)) for k in ("score", "index", "value") if _num(a.get(k)) is not None), None)
-        if idx is None and a.get("legend") in SEVERITY:
-            idx = SEVERITY.index(a["legend"])
-        if idx is None: return None
-        i = max(0, min(len(SEVERITY) - 1, int(round(idx))))
-        p = a.get("probabilities", a.get("probs"))
-        if isinstance(probs, dict) and all(s in probs for s in SEVERITY):   # serve may emit {label: p}; UI wants a list
-            p = [_num(probs[s]) for s in SEVERITY]
-        return {"index": i, "label": SEVERITY[i], "confidence": _num(a.get("confidence")), "probabilities": p}
-    return a
-
-
-def _answers_to_dict(answers, qs):
-    """d1 answers may be a dict, a list of [name, ans] pairs, dicts with "name", or bare answers in request order."""
-    if isinstance(answers, dict):
-        return answers
-    if not isinstance(answers, list):
-        return {}
-    out, names = {}, list(qs)
-    for i, item in enumerate(answers):
-        if isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[0], str):
-            out[item[0]] = item[1]
-        elif isinstance(item, dict) and isinstance(item.get("name"), str):
-            out[item["name"]] = item.get("answer", item)
-        elif i < len(names):
-            out[names[i]] = item
-    return out
-
-
-def decide(lines, about=""):
-    """One d1 call over the English lines → calibrated category/severity/action/personal/per-line importance.
-    Returns None if DECIDER=none or no lines. Raises on engine failure (caller turns it into {"error": ...})."""
-    about = (about or "").strip()
-    if DECIDER == "none" or D1 is None or not lines:
-        return None
-    lines = lines[:MAX_LINES]
-    state = "\n".join(f"{i}. {l}" for i, l in enumerate(lines, 1))
-    qs = build_questions(lines, about)
-    t0 = time.time()
-    for attempt in (1, 2):                                    # engine crash/timeout → restart + retry once
-        try:
-            resp = D1.call({"state": state, "questions": qs})
-            break
-        except queue.Empty:
-            err = f"timeout after {D1_TIMEOUT:.0f} s"
-        except Exception as e:
-            err = repr(e)
-        print(f"[d1] attempt {attempt} failed: {err}", flush=True)
-        if attempt == 2:
-            raise EngineError("d1", err)
-    seconds = round(time.time() - t0, 3)
-    if resp.get("error") or str(resp.get("status", "Ok")).lower() not in ("ok",):
-        raise EngineError("d1", f"status {resp.get('status')}: {resp.get('error')}")
-    answers = _answers_to_dict(resp.get("answers", {}), qs)
-    norm = {n: _normalize_answer(q["type"], answers.get(n)) for n, q in qs.items()}
-    tm = resp.get("timings") or {}
+def _record(result, source, about, question, errors):
+    d = result.get("decision") or {}
+    v = result.get("_vlm") or {}
+    sev = d.get("severity") or {}
+    cat = d.get("category") or {}
+    ranking = sorted(enumerate(d.get("importance") or [], 1), key=lambda pair: pair[1] if pair[1] is not None else -1, reverse=True)
     return {
-        "category": norm.get("category"),
-        "severity": norm.get("severity"),
-        "action_p": (norm.get("action") or {}).get("p"),
-        "personal_p": (norm.get("personal") or {}).get("p"),
-        "importance": [(norm.get(f"line_{i}") or {}).get("p") for i in range(1, len(lines) + 1)],
-        "passes": resp.get("passes"),
-        "seconds": seconds,
-        "d1_ms": tm.get("d1_ms", tm.get("prefill_ms")),
-        "backend": "zetic-d1",
-        "raw": resp,
+        "ts": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="milliseconds"),
+        "scan_id": result["scan_id"], "trigger": result["trigger"],
+        "input": {"source": source, "image": f"logs/img/{result['scan_id']}.png", "about": about, "question": question},
+        "vlm": {"ok": bool(result.get("lines")), "mode": v.get("mode"), "seconds": v.get("seconds"),
+                "ttft_ms": v.get("ttft_ms"), "tok_s": v.get("tok_s"), "completion_tokens": v.get("completion_tokens"),
+                "finish": v.get("finish"), "lines": len(result.get("lines", [])),
+                "unreadable": len(result.get("unreadable", [])), "parse_error": result.get("parse_error", False),
+                "proposal": {"languages": result.get("languages", []), "summary": result.get("summary", ""),
+                             "lines": result.get("lines", []), "unreadable": result.get("unreadable", []),
+                             "answer": result.get("answer", "")}},
+        "d1": {"ok": bool(d and not d.get("error")), "seconds": d.get("seconds"), "passes": d.get("passes"),
+               "category": cat.get("value"), "severity": sev.get("index"), "action_p": d.get("action_p"),
+               "personal_p": d.get("personal_p"), "importance": d.get("importance"),
+               "top": [[i, p] for i, p in ranking[:3]]},
+        "decision": result.get("gate"),
+        "action": {"type": "ui_alert" if result.get("gate", {}).get("alert") else "none",
+                   "executed": bool(result.get("gate", {}).get("alert"))}, "errors": errors,
     }
 
 
-def gate(d):
-    """Code (not the model) authorizes the alert action (§12 rule 4)."""
-    if not d or d.get("error"): return {"alert": False, "reason": "no decision"}
-    sev = (d.get("severity") or {}).get("index", -1)
-    top = max([p for p in d.get("importance", []) if p is not None], default=0)
-    if sev >= ALERT_SEVERITY: return {"alert": True, "reason": f"severity {sev} >= {ALERT_SEVERITY}"}
-    if top >= IMPORTANCE_THRESHOLD and (d.get("action_p") or 0) >= 0.5:
-        return {"alert": True, "reason": f"line importance {top:.2f} >= {IMPORTANCE_THRESHOLD}"}
-    return {"alert": False, "reason": f"severity {sev}, top line {top:.2f}"}
+def log_scan(record):
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with log_lock, LOG_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush(); os.fsync(handle.fileno())
 
 
-def analyze(png_path, about="", question=""):
-    """Full model pipeline for one 512x512 PNG: step 1 → step 2 (fail soft) → gate. Sequential on the NPU.
-    Returns the /scan body (§10.1) minus scan_id/_image/log, which the HTTP layer adds.
-    Raises EngineError only if the VLM fails (→ 502); d1 failures become decision={"error": ...}."""
-    with PIPELINE_LOCK:
-        t0 = time.time()
-        res = read_and_translate(png_path, about, question)
+def run_scan(payload, trigger="button"):
+    global scan_id, latest
+    if not scan_lock.acquire(blocking=False): raise RuntimeError("scan already in progress")
+    try:
+        started = time.monotonic()
+        png, source = model_png(payload.get("image"))
+        with state_lock:
+            scan_id += 1
+            current_id = scan_id
+        SHM_DIR.mkdir(parents=True, exist_ok=True); IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        path = SHM_DIR / f"scan-{current_id}.png"
+        path.write_bytes(png)
+        (IMAGE_DIR / f"{current_id}.png").write_bytes(png)
+        about = str(payload.get("about") or "")[:500]
+        question = str(payload.get("question") or "")[:500]
+        errors = []
+        result = {"scan_id": current_id, "trigger": trigger, "languages": [], "summary": "", "lines": [],
+                  "unreadable": [], "answer": "", "parse_error": False, "truncated": False}
         try:
-            res["decision"] = decide(res["lines"], about)
-        except Exception as e:
-            res["decision"] = {"error": str(e)}
-        res["gate"] = gate(res["decision"])
-        res["_metrics"] = {"total_s": round(time.time() - t0, 3),
-                           "vlm_s": res["_vlm"]["seconds"],
-                           "d1_s": (res["decision"] or {}).get("seconds")}
-        return res
+            result.update(pipeline.read_and_translate(str(path), about, question))
+        except Exception as exc:
+            errors.append(f"vlm: {exc}")
+            result["error"] = f"vlm: {exc}"
+        if not result.get("error"):
+            try:
+                result["decision"] = pipeline.decide(result.get("lines", []), about)
+            except Exception as exc:
+                errors.append(f"d1: {exc}")
+                result["decision"] = {"error": str(exc)}
+        else:
+            result["decision"] = None
+        result["gate"] = pipeline.gate(result.get("decision"))
+        result["_metrics"] = {"total_s": round(time.monotonic()-started, 3)}
+        result["_image"] = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        log_scan(_record(result, source, about, question, errors))
+        with state_lock: latest = result
+        return result
+    finally:
+        scan_lock.release()
 
 
-def vlm_log(res):
-    """`vlm` field of the JSONL record (§9.2)."""
-    v = res.get("_vlm") or {}
-    return {"ok": True, "mode": v.get("mode"), "seconds": v.get("seconds"), "ttft_ms": v.get("ttft_ms"),
-            "tok_s": v.get("tok_s"), "completion_tokens": v.get("completion_tokens"), "finish": v.get("finish"),
-            "lines": len(res.get("lines") or []), "unreadable": len(res.get("unreadable") or []),
-            "parse_error": bool(res.get("parse_error"))}
+def watch_loop():
+    previous = scanned = None
+    stable_since = None
+    last_scan = 0
+    while True:
+        time.sleep(.25)
+        with state_lock:
+            active = watch_on and camera_ok and frame is not None
+            current = frame.copy() if active else None
+        if current is None or cv2 is None:
+            previous = None; stable_since = None; continue
+        thumb = cv2.resize(cv2.cvtColor(current, cv2.COLOR_BGR2GRAY), (160, 90))
+        if previous is not None:
+            movement = float(np.mean(cv2.absdiff(thumb, previous)))
+            stable_since = time.monotonic() if movement >= 3 else (stable_since or time.monotonic())
+        previous = thumb
+        change = float(np.mean(cv2.absdiff(thumb, scanned))) if scanned is not None else 255
+        sharpness = cv2.Laplacian(thumb, cv2.CV_64F).var()
+        if (stable_since and time.monotonic()-stable_since >= WATCH_STABLE_S
+                and change > WATCH_CHANGE and sharpness > WATCH_SHARP
+                and time.monotonic()-last_scan >= 3 and not scan_lock.locked()):
+            try:
+                run_scan({}, "watch")
+                scanned = thumb
+                last_scan = time.monotonic()
+            except Exception as exc:
+                print(f"[watch] {exc}", flush=True)
 
 
-def d1_log(d):
-    """`d1` field of the JSONL record (§9.2). Includes the full per-line `importance` list for tools/calibrate.py."""
-    if d is None:
-        return {"ok": False, "skipped": True}
-    if d.get("error"):
-        return {"ok": False, "error": d["error"]}
-    imp = d.get("importance") or []
-    top = sorted(((i, p) for i, p in enumerate(imp, 1) if p is not None), key=lambda t: -t[1])[:3]
-    return {"ok": True, "seconds": d.get("seconds"), "passes": d.get("passes"),
-            "category": (d.get("category") or {}).get("value"), "severity": (d.get("severity") or {}).get("index"),
-            "action_p": d.get("action_p"), "personal_p": d.get("personal_p"),
-            "top": [[i, round(p, 3)] for i, p in top], "importance": imp,
-            "importance_threshold": IMPORTANCE_THRESHOLD}
+class Handler(BaseHTTPRequestHandler):
+    def json_response(self, code, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-store")
+        self.end_headers(); self.wfile.write(data)
+
+    def do_GET(self):
+        global watch_on
+        url = urlsplit(self.path)
+        try:
+            if url.path == "/":
+                data = (ROOT / "index.html").read_bytes()
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            elif url.path == "/status":
+                with state_lock: camera, watch = camera_ok, watch_on
+                self.json_response(200, dict(pipeline.status(), server_camera=camera, watch=watch))
+            elif url.path == "/latest":
+                after = int(parse_qs(url.query).get("after", [0])[0])
+                with state_lock: result = latest if latest.get("scan_id", 0) > after else {}
+                self.json_response(200, result)
+            elif url.path == "/log":
+                n = min(100, max(1, int(parse_qs(url.query).get("n", [20])[0])))
+                records = []
+                if LOG_FILE.exists():
+                    for line in LOG_FILE.read_text(encoding="utf-8").splitlines()[-n:]:
+                        try: records.append(json.loads(line))
+                        except json.JSONDecodeError: pass
+                self.json_response(200, {"records": records})
+            elif url.path == "/stream":
+                with state_lock: available = camera_ok
+                if not available: return self.json_response(404, {"error": "server camera unavailable"})
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Cache-Control", "no-store"); self.end_headers()
+                while True:
+                    with state_lock: current = frame.copy() if camera_ok and frame is not None else None
+                    if current is None: break
+                    h, w = current.shape[:2]
+                    if w > 960: current = cv2.resize(current, (960, round(h*960/w)))
+                    h, w = current.shape[:2]; s = min(h, w); x = (w-s)//2; y = (h-s)//2
+                    cv2.rectangle(current, (x, y), (x+s, y+s), (76, 217, 153), 2)
+                    ok, jpg = cv2.imencode(".jpg", current, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ok:
+                        data = bytes(jpg)
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n")
+                    time.sleep(1/14)
+            else: self.json_response(404, {"error": "not found"})
+        except (BrokenPipeError, ConnectionResetError): pass
+        except Exception as exc:
+            try: self.json_response(500, {"error": str(exc)})
+            except (BrokenPipeError, ConnectionResetError): pass
+
+    def do_POST(self):
+        global watch_on
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_UPLOAD * 2: return self.json_response(400, {"error": "invalid request size"})
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict): raise ValueError("expected JSON object")
+            if self.path == "/scan":
+                result = run_scan(payload, "upload" if payload.get("image") else "button")
+                self.json_response(502 if result.get("error") else 200, result)
+            elif self.path == "/watch":
+                with state_lock: watch_on = bool(payload.get("on"))
+                self.json_response(200, {"watch": watch_on})
+            else: self.json_response(404, {"error": "not found"})
+        except (ValueError, TypeError) as exc: self.json_response(400, {"error": str(exc)})
+        except LookupError as exc: self.json_response(503, {"error": str(exc)})
+        except RuntimeError as exc: self.json_response(503, {"error": str(exc)})
+        except Exception as exc: self.json_response(500, {"error": str(exc)})
 
 
-def scan_errors(res):
-    """Errors list for the JSONL record: VLM warnings + d1 error."""
-    errs = list((res.get("_vlm") or {}).get("errors") or [])
-    d = res.get("decision")
-    if isinstance(d, dict) and d.get("error"):
-        errs.append(f"d1: {d['error']}")
-    return errs
+def main():
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    if cv2 is not None and CAMERA.lower() != "none":
+        threading.Thread(target=camera_loop, daemon=True).start()
+    threading.Thread(target=watch_loop, daemon=True).start()
+    threading.Thread(target=pipeline.warm_engines, daemon=True).start()
+    host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "8000"))
+    print(f"rosetta http://{host}:{port} camera={CAMERA} vlm={os.environ.get('VLM_MODE','engine')} d1={os.environ.get('D1_CMD','default')}", flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
-# =====================================================================================
-# [Rehan] HTTP server · camera · image prep (to_model_image/save_model_image) · watch loop ·
-#         JSONL log_scan · main(). /scan = analyze() → add scan_id/_image → log_scan(vlm_log, d1_log,
-#         gate, action, scan_errors). /status uses engines_status(), SEVERITY, IMPORTANCE_THRESHOLD.
-#         Call start_engines() at startup.
-# =====================================================================================
+if __name__ == "__main__": main()

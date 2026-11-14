@@ -312,7 +312,8 @@ rosetta/
 ├── rosetta-master-plan.md   ← this file
 ├── README.md                what it is, how to run, measured metrics (judges read this)
 ├── AGENTS.md, CLAUDE.md     "Read rosetta-master-plan.md first." + §12 rules (3–5 lines)
-├── app.py                   web server + pipeline + Engine supervisor + JSONL log (stdlib; OpenCV optional)
+├── app.py                   web server + camera + JSONL log (stdlib; OpenCV optional)
+├── pipeline.py              model pipeline + Engine supervisor (Isaac-owned boundary)
 ├── index.html               single-file UI, no external assets
 ├── engine/
 │   ├── CMakeLists.txt       builds rosetta_vlm (+ rosetta_d1) against the Ixian SDK
@@ -1164,6 +1165,9 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | Very short demo slot (2 min) | High | Lead with Wi-Fi off + Tibetan; one sentence per point |
 
 ### Known unknowns (fill in tonight)
+- Rehan app-shell build on this Windows workspace: `python` is a WindowsApps alias that cannot run; `py -3` reports "No installed Python found"; WSL is not installed. Python compile and mock HTTP acceptance remain unverified here. Run §14.2 on the IQ9 or another machine with Python before the demo.
+- The app shell now imports model functions from `pipeline.py` (same §10 HTTP contract). This lets Isaac own and replace runtime functions without editing Rehan's HTTP/camera/log code in `app.py`. Real SDK/model behavior remains unverified.
+- `tools/offline_audit.py` + `scripts/*` are now vendored/merged; `python3 tools/offline_audit.py .` on the Mac = 0 errors, 3 expected warnings (setup-time download URLs in `stage_zetic.sh`/`preflight.sh`). Re-run before submitting. Board rehearsal still pending.
 - Pre-built code allowed? → `____`
 - USB-C link setup method / Ethernet direct allowed? → `____`
 - USB drive contents (ZETIC packages?) → `____`
@@ -1197,12 +1201,14 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D13 | Thinking off, temperature 0, `max_tokens` 768 | SDK default; repeatable; starter rule: cap every call |
 | D14 | JSONL decision log + `gate()` in code + watch mode | Judges must see inputs/decisions/actions/errors; flagship Always-On track; starter rule "code authorizes actions" |
 | D15 | Own repo + vendored starter files (`zetic_run.py`, `offline_audit.py`, `preflight.sh`, MIT) | Keeps our layout; reuses the judge-authored, board-tested tooling |
-| D16 | `engine/*.cpp` + CMake used **verbatim**; compile-checked against the real SDK 0.2.2 headers (Apple clang 21, `-fsyntax-only`, exit 0, 2026-11-13 ~18:50) | No API drift between plan and headers. SDK bundles nlohmann/json 3.12.0, same as `engine/third_party` |
-| D17 | `zetic_d1_cli serve` shape (from 0.2.2 README, `samples/requests.jsonl`, binary strings; **not yet seen on board**): ready `{event,protocol:"zetic-d1-serve/1",model,target,load_ms,runtime,soc,sdk_version,runtime_commit,package_dir,max_rows,inputs}` (note `sdk_version`/`max_rows`, no `nsp_count`: d1 is always 1 NSP); response `{id,model,answers:{name:{type,noul,choice,choices,confidence,score,legend,probabilities}},usage:{input_tokens,output_tokens},passes,timings:{sdk_ms,…,prefill_ms,dsp_ms,…}}`; **no `status` on success**, errors as `{"error": …}`; serve `images` must be base64 data URLs (file paths rejected) | `decide()` treats a missing status as Ok, accepts dict or list answers; normalizer converts a score `probabilities` `{label: p}` dict into the 5-element list the UI bar expects |
-| D18 | `tools/zetic_run.run(sdk, model, prompt, *, image=None, audio=None, max_tokens=256, timeout=120)`; `max_tokens` 1..1024; `finish_reason` is **lowercase** (`stop`/`length`); `ok=False` on a length finish or a missing NSP evidence line | `app.py` cli mode capitalizes finish, treats "generation did not finish naturally" and "missing current-request Hexagon" as **warnings** (parse + `truncated` / logged), not scan failures |
-| D19 | JSONL `d1` record also carries the full per-line `importance` list (+ `importance_threshold`); `app.py` exposes `vlm_log()`, `d1_log()`, `scan_errors()` for `log_scan` | `tools/calibrate.py` needs every line's p, not just `top` |
-| D20 | VLM retried once on crash/timeout/empty; d1 also restarted + retried once on crash/timeout before falling back to `decision: {"error"}` | §12 rule 2 (retry at most once); a single serve DSP exit shouldn't cost the scan its banner |
-| D21 | `app.py` model pipeline wrapped in `analyze(png, about, question)` under a global `PIPELINE_LOCK` | Watch loop + button can't put two scans on the NPU at once (§12 rule 6) |
+| D16 | Split the Python app into `app.py` shell and `pipeline.py` model boundary | The shared-file ownership split in §0 needed a stable interface while the repository had no implementation; §10 response shapes remain unchanged. Rehan provided the mock-compatible adapter; Isaac can replace its runtime code. |
+| D17 | UI JavaScript syntax checked with Node; Python execution pending | This Windows workspace has no installed Python or WSL, so `py_compile` and §14.2 cannot be run here. No board performance or NPU evidence is claimed. |
+| D18 | `engine/*.cpp` + CMake used **verbatim**; compile-checked against the real SDK 0.2.2 headers (Apple clang 21, `-fsyntax-only`, exit 0, 2026-11-13 ~18:50) | No API drift between plan and headers. SDK bundles nlohmann/json 3.12.0, same as `engine/third_party` |
+| D19 | `zetic_d1_cli serve` shape (from 0.2.2 README, `samples/requests.jsonl`, binary strings; **not yet seen on board**): ready `{event,protocol:"zetic-d1-serve/1",model,target,load_ms,runtime,soc,sdk_version,runtime_commit,package_dir,max_rows,inputs}` (note `sdk_version`/`max_rows`, no `nsp_count`: d1 is always 1 NSP); response `{id,model,answers:{name:{type,noul,choice,choices,confidence,score,legend,probabilities}},usage:{input_tokens,output_tokens},passes,timings:{sdk_ms,…,prefill_ms,dsp_ms,…}}`; **no `status` on success**, errors as `{"error": …}`; serve `images` must be base64 data URLs (file paths rejected) | `decide()` treats a missing status as Ok, accepts dict or list answers; normalizer converts a score `probabilities` `{label: p}` dict into the 5-element list the UI bar expects |
+| D20 | `tools/zetic_run.run(sdk, model, prompt, *, image=None, audio=None, max_tokens=256, timeout=120)`; `max_tokens` 1..1024; `finish_reason` is **lowercase** (`stop`/`length`); `ok=False` on a length finish or a missing NSP evidence line | `pipeline.py` cli mode capitalizes finish, treats "generation did not finish naturally" and "missing current-request Hexagon" as **warnings** (parse + `truncated` / logged), not scan failures |
+| D21 | JSONL `d1` record also carries the full per-line `importance` list (Rehan's `_record` already does this); `pipeline.py` also has `vlm_log()`, `d1_log()`, `scan_errors()` helpers | `tools/calibrate.py` needs every line's p, not just `top` |
+| D22 | VLM retried once on crash/timeout/empty; d1 also restarted + retried once on crash/timeout before falling back to `decision: {"error"}` | §12 rule 2 (retry at most once); a single serve DSP exit shouldn't cost the scan its banner |
+| D23 | Isaac's runtime code replaces Rehan's `pipeline.py` adapter behind the same interface (`read_and_translate`, `decide`, `gate`, `status`, `warm_engines`); `app.py`'s `scan_lock` keeps scans sequential. `pipeline.analyze()` (with its own `PIPELINE_LOCK`) is an optional one-call wrapper | §0 ownership split without touching the HTTP shell; §12 rule 6 |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---
