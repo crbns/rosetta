@@ -1,0 +1,10 @@
+models/
+sdk/
+stage/
+engine/build/
+engine/build*/
+__pycache__/
+*.pyc
+.DS_Store
+*.part
+.venv/
