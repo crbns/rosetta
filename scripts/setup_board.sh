@@ -2,23 +2,25 @@
 # setup_board.sh [board]: print the sudo commands of plan §11.3 for a HUMAN to paste (never runs them),
 # then run read-only readiness checks, then build engine/ if every check passes (or with --build).
 #
-#   scripts/setup_board.sh [--build] [--no-build] [--print-only]
+#   scripts/setup_board.sh [--build] [--no-build] [--print-only] [--no-verify]
 #     --build       build engine/ even if some checks failed
 #     --no-build    checks only
 #     --print-only  print the sudo commands and exit
+#     --no-verify   skip the SDK verify-load of each model (~1 min each); checksums still run
 #
 # Env: IXIAN_SDK (default $HOME/rosetta/sdk, else ./sdk), VL_MODEL, D1_MODEL (plan §10.6).
 # Rules (plan §12): never chmod device nodes, never apt upgrade, never install qcom-adreno1,
 # never type passwords into commands. This script installs nothing and changes nothing outside engine/build.
 set -uo pipefail
 
-FORCE_BUILD=0; NO_BUILD=0; PRINT_ONLY=0
+FORCE_BUILD=0; NO_BUILD=0; PRINT_ONLY=0; NO_VERIFY=0
 for arg in "$@"; do
   case "$arg" in
     --build) FORCE_BUILD=1 ;;
     --no-build) NO_BUILD=1 ;;
     --print-only) PRINT_ONLY=1 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --no-verify) NO_VERIFY=1 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -95,6 +97,42 @@ for m in "$VL_MODEL" "$D1_MODEL"; do
   fi
 done
 [[ -f "$VL_MODEL/v73-1nsp/manifest.json" ]] && ok "optional $VL_MODEL/v73-1nsp present" || warn "no $VL_MODEL/v73-1nsp (only needed if NSPs contend)"
+
+# Re-check package checksums on the board: the laptop verified them, but laptop -> USB -> scp can truncate.
+if command -v sha256sum >/dev/null 2>&1; then SHA=(sha256sum); else SHA=(shasum -a 256); fi
+for m in "$VL_MODEL" "$D1_MODEL"; do
+  if [[ ! -f "$m/v73/SHA256SUMS" ]]; then
+    fail "no $m/v73/SHA256SUMS (incomplete copy? re-scp from stage/models)"
+  elif out="$(cd "$m/v73" && "${SHA[@]}" -c SHA256SUMS 2>&1)"; then
+    ok "sha256 $m/v73 ($(grep -c ': OK$' <<<"$out") files)"
+  else
+    fail "sha256 mismatch in $m/v73 (re-copy from stage/models; never edit packages):"
+    grep -v ': OK$' <<<"$out" | head -5 | sed 's/^/          /'
+  fi
+done
+
+# SDK verify-load (starter repo examples/zetic-lfm/README.md): proves libs + FastRPC + package + NPU together.
+# verify_load <label> <log name> <cmd...>: FAIL on nonzero exit; WARN if no hexrt load line (plan §8.5 evidence).
+verify_load() {
+  local label="$1" log="${TMPDIR:-/tmp}/rosetta_verify_$2.log"; shift 2
+  if LD_LIBRARY_PATH="$IXIAN_SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" timeout 180s "$@" >"$log" 2>&1; then
+    ok "verify-load $label"
+    grep -m1 'hexrt open' "$log" | sed 's/^/          /' || warn "verify-load $label: no 'hexrt open' line (see $log)"
+  else
+    fail "verify-load $label exited $? (log: $log):"
+    tail -5 "$log" | sed 's/^/          /'
+  fi
+}
+if (( NO_VERIFY )); then
+  warn "SDK verify-load skipped (--no-verify)"
+elif ! command -v timeout >/dev/null 2>&1; then
+  warn "SDK verify-load skipped (no 'timeout' command; not on the board?)"
+else
+  [[ -x "$IXIAN_SDK/bin/zetic_lfm3_cli" && -f "$VL_MODEL/v73/manifest.json" ]] \
+    && verify_load "$VL_MODEL (lfm3, v73)" lfm3 "$IXIAN_SDK/bin/zetic_lfm3_cli" info --model "$VL_MODEL" --target v73 --verify --verbose
+  [[ -x "$IXIAN_SDK/bin/zetic_d1_cli" && -f "$D1_MODEL/v73/manifest.json" ]] \
+    && verify_load "$D1_MODEL (d1)" d1 "$IXIAN_SDK/bin/zetic_d1_cli" info --model "$D1_MODEL" --verify --verbose
+fi
 
 if [[ -f engine/third_party/nlohmann/json.hpp ]] || [[ -f /usr/include/nlohmann/json.hpp ]]; then
   ok "nlohmann/json.hpp available"
