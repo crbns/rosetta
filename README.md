@@ -23,11 +23,23 @@ Open <http://127.0.0.1:8000> (through an SSH tunnel when running on the board). 
 
 ## Implementation status
 
-The mock engines, HTTP/camera/log shell, model adapter, watch loop, and single-file UI are present. `pipeline.py` is the model boundary for Isaac's board integration. Python acceptance and real NPU execution have not been run here because this Windows workspace has no Python installation. The inline JavaScript passed a Node syntax check. Use §14.2 of the master plan on a machine with Python, then complete the IQ9 smoke tests and offline audit before submission.
+- **Done, verified on a Mac with mock engines:** HTTP/camera/log shell (`app.py`), model pipeline + engine supervisor (`pipeline.py`), single-file UI (`index.html`), watch mode. Plan §14.2 mock acceptance passes with both d1 response shapes, engine crash recovery (`--fail-every 3`) and one JSONL line per scan. `tools/offline_audit.py .`: 0 errors.
+- **Not yet verified:** execution on the IQ9 NPU, real model output quality, and the board metrics below. Until then, nothing here claims NPU numbers.
+- `samples/`: 512×512 PNGs of every prop (upload fallback, smoke-test inputs), plus the source PDFs.
+
+## Tools
+
+| Tool | Use |
+|---|---|
+| `tools/mock_engine.py vlm\|d1` | fake engines for Mac development |
+| `tools/make_labels.py` | after prop scans: checks each scan against the plan §14.4 "Must" list and drafts `tools/labels.json` (answer key in `tools/prop_key.json`) |
+| `tools/calibrate.py` | picks `IMPORTANCE_THRESHOLD` from labeled scans |
+| `tools/metrics.py` | prints the metrics table below from `logs/rosetta.jsonl` (`--url` adds peak RSS) |
+| `tools/offline_audit.py .` | flags anything that could reach the network |
 
 ## Metrics
 
-_Measured on the board, medians of ≥5 scans. To be filled in._
+_Measured on the board, medians of ≥5 scans. To be filled in with `python3 tools/metrics.py --since <first real scan> --skip-first --url http://127.0.0.1:8000`._
 
 | Metric | Value |
 |---|---|

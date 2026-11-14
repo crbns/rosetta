@@ -325,7 +325,9 @@ rosetta/
 │   ├── zetic_run.py         VENDORED from starter repo examples/zetic-lfm/run.py (MIT): one-shot CLI, P0 VLM path
 │   ├── offline_audit.py     VENDORED from starter repo skills/iq9-offline-rehearsal/scripts/ (MIT)
 │   ├── openai_vlm_bridge.py VLM JSONL ↔ OpenAI chat server (Mac llama-server tuning; emergency GenieX)
-│   └── calibrate.py         picks IMPORTANCE_THRESHOLD from logged prop scans + labels (P2)
+│   ├── calibrate.py         picks IMPORTANCE_THRESHOLD from logged prop scans + labels (P2)
+│   ├── make_labels.py       §14.4 Must check per scan + drafts labels.json (answer key: prop_key.json)
+│   └── metrics.py           README median table from logs/rosetta.jsonl (+ peak RSS via /status)
 ├── scripts/
 │   ├── preflight.sh         VENDORED from starter repo skills/iq9-preflight/scripts/ (MIT)
 │   ├── stage_zetic.sh       laptop: download SDK + pinned ZETIC packages (+ checksums)
@@ -1165,7 +1167,8 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | Very short demo slot (2 min) | High | Lead with Wi-Fi off + Tibetan; one sentence per point |
 
 ### Known unknowns (fill in tonight)
-- Rehan app-shell build on this Windows workspace: `python` is a WindowsApps alias that cannot run; `py -3` reports "No installed Python found"; WSL is not installed. Python compile and mock HTTP acceptance remain unverified here. Run §14.2 on the IQ9 or another machine with Python before the demo.
+- ~~Rehan app-shell Python unverified on Windows~~ → **§14.2 mock acceptance PASSES on Isaac's Mac (19:06):** both d1 shapes → category/severity + 9 importances, `--fail-every 3` recovers via retry, one JSONL line per scan, `py_compile` clean.
+- **Models are NOT staged on Isaac's Mac** (SDK 0.2.2 is, in the orca `gorgonian` worktree `stage/sdk`). Rehan (on the IQ9) downloads them on the board: `scripts/stage_zetic.sh` or the §9.11 `hf download` lines (venv for `huggingface_hub`, §15 risk row).
 - The app shell now imports model functions from `pipeline.py` (same §10 HTTP contract). This lets Isaac own and replace runtime functions without editing Rehan's HTTP/camera/log code in `app.py`. Real SDK/model behavior remains unverified.
 - `tools/offline_audit.py` + `scripts/*` are now vendored/merged; `python3 tools/offline_audit.py .` on the Mac = 0 errors, 3 expected warnings (setup-time download URLs in `stage_zetic.sh`/`preflight.sh`). Re-run before submitting. Board rehearsal still pending.
 - Pre-built code allowed? → `____`
@@ -1209,6 +1212,9 @@ Backup set (`translator_demo_props.pdf`): French menu, Japanese izakaya menu (¥
 | D21 | JSONL `d1` record also carries the full per-line `importance` list (Rehan's `_record` already does this); `pipeline.py` also has `vlm_log()`, `d1_log()`, `scan_errors()` helpers | `tools/calibrate.py` needs every line's p, not just `top` |
 | D22 | VLM retried once on crash/timeout/empty; d1 also restarted + retried once on crash/timeout before falling back to `decision: {"error"}` | §12 rule 2 (retry at most once); a single serve DSP exit shouldn't cost the scan its banner |
 | D23 | Isaac's runtime code replaces Rehan's `pipeline.py` adapter behind the same interface (`read_and_translate`, `decide`, `gate`, `status`, `warm_engines`); `app.py`'s `scan_lock` keeps scans sequential. `pipeline.analyze()` (with its own `PIPELINE_LOCK`) is an optional one-call wrapper | §0 ownership split without touching the HTTP shell; §12 rule 6 |
+| D24 | `app.py` resumes `scan_id` from the max in `logs/rosetta.jsonl` at startup; JSONL record gains `metrics: {total_s}` (additive) | Restarts reset ids to 1 → `logs/img/N.png` overwritten, duplicate ids broke `calibrate.py` labels; README end-to-end median needs total_s in the log |
+| D25 | `samples/*_512.png` (12 props + `notext_512.png`) rendered from the prop PDFs: page → trim to the sign → pad square with page bg → 512×512 RGB PNG | §9.7 upload safety net + §14.1 smoke-test inputs (`tibet_512.png`). Clean renders = best case; the webcam will be worse |
+| D26 | `tools/prop_key.json` (§14.4 as regexes) + `tools/make_labels.py` (prop auto-detect, Must-item acceptance report, drafts `labels.json`) + `tools/metrics.py` (README median table) | Turns B11 acceptance + B14 labels + §11.5 measurement into one command each at the board, instead of hand work during 7:20–7:40. Regexes are drafts: eyeball the printout |
 | _add rows tonight (results, numbers, changes)_ | | |
 
 ---

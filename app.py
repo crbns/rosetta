@@ -125,7 +125,20 @@ def _record(result, source, about, question, errors):
         "decision": result.get("gate"),
         "action": {"type": "ui_alert" if result.get("gate", {}).get("alert") else "none",
                    "executed": bool(result.get("gate", {}).get("alert"))}, "errors": errors,
+        "metrics": result.get("_metrics") or {},
     }
+
+
+def last_logged_scan_id():
+    """Resume numbering after a restart so logs/img/N.png and JSONL scan_ids never collide."""
+    best = 0
+    try:
+        with LOG_FILE.open(encoding="utf-8") as handle:
+            for line in handle:
+                try: best = max(best, int(json.loads(line).get("scan_id") or 0))
+                except (ValueError, TypeError, AttributeError): pass
+    except OSError: pass
+    return best
 
 
 def log_scan(record):
@@ -280,6 +293,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global scan_id
+    scan_id = last_logged_scan_id()
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     if cv2 is not None and CAMERA.lower() != "none":

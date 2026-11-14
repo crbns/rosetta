@@ -1,0 +1,118 @@
+{
+  "_comment": "Prop answer key (plan §14.4) in machine form for tools/make_labels.py. fingerprint = regexes that identify the prop from its translated lines (need >= 2 hits, or pass --map). must = lines that MUST be flagged (each regex should match exactly one VLM line). min_severity indexes SEVERITY (0 info .. 4 danger). about = profile to type for that prop. Translations are Claude-written, not native-checked.",
+  "tibet": {
+    "sample": "samples/tibet_512.png",
+    "fingerprint": ["4,?650", "altitude", "mastiff", "herder", "pasture", "oxygen", "\\b120\\b"],
+    "must": {
+      "no signal": "\\bno\\b[^.]*(signal|reception|coverage)|without (signal|reception|coverage)",
+      "down by 14:00": "14[:.]00|2 ?(pm|p\\.m\\.)|afternoon",
+      "altitude sickness: descend": "headache|vomit|breath|altitude sickness"
+    },
+    "unreadable_required": true,
+    "min_severity": 2
+  },
+  "kyrgyz": {
+    "sample": "samples/kyrgyz_512.png",
+    "fingerprint": ["border", "bishkek", "permit|pass\\b", "detain", "off-?road"],
+    "must": {
+      "no entry without permit": "without (a )?(permit|pass)|prohibited.*(permit|pass)|(permit|pass).*(prohibited|forbidden)",
+      "permit in Bishkek, 10 working days": "bishkek|10 (working|business) days"
+    },
+    "min_severity": 2
+  },
+  "ladakh": {
+    "sample": "samples/ladakh_512.png",
+    "fingerprint": ["5,?360", "inner line", "check ?post", "army", "landslide", "20 min"],
+    "must": {
+      "landslide zone, not after 2 pm": "landslide|2 ?(pm|p\\.m\\.)|14[:.]00",
+      "Inner Line Permit mandatory": "inner line|permit"
+    },
+    "min_severity": 2
+  },
+  "thai": {
+    "sample": "samples/thai_512.png",
+    "fingerprint": ["baht", "leech", "ranger|guide", "7 ?km", "trash|rubbish|litter"],
+    "must": {
+      "no entry after 15:00": "15[:.]00|3 ?(pm|p\\.m\\.)",
+      "Thai adult fee 40 baht": "\\b40\\b",
+      "foreign adult fee 300 baht": "\\b300\\b"
+    },
+    "min_severity": 1
+  },
+  "vietnam": {
+    "sample": "samples/vietnam_512.png",
+    "fingerprint": ["km ?3[0-9]|km ?4[01]", "motorbike|motorcycle", "gas|fuel|petrol", "landslide", "detour|junction|overtak"],
+    "must": {
+      "vehicles banned 17:00-06:00": "17[:.]?00|5 ?(pm|p\\.m\\.)|17h",
+      "no gas station for 60 km": "60 ?km|gas|fuel|petrol"
+    },
+    "min_severity": 2,
+    "about": "on a motorbike"
+  },
+  "arabic": {
+    "sample": "samples/arabic_512.png",
+    "fingerprint": ["reserve", "sunset", "45", "camp", "track|trail|path", "water"],
+    "must": {
+      "don't leave the marked track": "track|trail|path|lost",
+      "last drinkable water 12 km": "water|12 ?km"
+    },
+    "min_severity": 3
+  },
+  "french_menu": {
+    "sample": "samples/french_menu_512.png",
+    "fingerprint": ["bouillabaisse", "tatin", "snail|escargot", "confit", "blanquette", "brest", "onion soup"],
+    "must": {
+      "bouillabaisse (shrimp, mussels)": "bouillabaisse|shrimp|prawn|mussel"
+    },
+    "min_severity": 2,
+    "about": "allergic to shellfish"
+  },
+  "japanese_menu": {
+    "sample": "samples/japanese_menu_512.png",
+    "fingerprint": ["izakaya|minato", "soba", "edamame", "tempura", "tantan", "chawanmushi|steamed egg", "rice ball|onigiri"],
+    "must": {
+      "shrimp tempura": "shrimp|prawn",
+      "soba is buckwheat": "soba|buckwheat",
+      "tantanmen: sesame + peanut": "peanut|tantan",
+      "¥300 cover charge (otoshi)": "300|cover|otoshi|appetizer"
+    },
+    "min_severity": 2,
+    "about": "allergic to shellfish"
+  },
+  "ibuprofen": {
+    "sample": "samples/ibuprofen_512.png",
+    "fingerprint": ["ibuprofen", "400 ?mg", "tablet", "aspirin|nsaid", "pregnan|trimester"],
+    "must": {
+      "max 3 tablets (1,200 mg) in 24 h": "1[.,]?200|3 tablets|24 ?h",
+      "don't take if allergic / ulcer / 3rd trimester": "allerg|ulcer|trimester|pregnan"
+    },
+    "min_severity": 3
+  },
+  "german_rail": {
+    "sample": "samples/german_rail_512.png",
+    "fingerprint": ["freiburg", "offenburg", "replacement bus|bus", "emmendingen|lahr", "platform|bay"],
+    "must": {
+      "no trains Freiburg-Offenburg Nov 14-17": "no trains|trains? (are )?(cancel|not run)|14\\.? ?(-|–|to) ?17|nov(ember)? 14",
+      "bikes not carried on buses": "bicycle|bike"
+    },
+    "min_severity": 2
+  },
+  "italian_cookie": {
+    "sample": "samples/italian_cookie_512.png",
+    "fingerprint": ["biscuit|cookie", "butter", "chocolate", "kcal|kj|energy", "best before|consume"],
+    "must": {
+      "may contain nuts and sesame": "may contain|traces|sesame"
+    },
+    "min_severity": 2,
+    "about": "allergic to nuts"
+  },
+  "french_parking": {
+    "sample": "samples/french_parking_512.png",
+    "fingerprint": ["parking", "deliver", "tow|impound", "135", "sunday|holiday"],
+    "must": {
+      "no parking Mon-Sat 7-11 except deliveries": "deliver|7 ?(h|am|:00)? ?(-|–|to) ?11",
+      "towing, €135": "tow|impound|135"
+    },
+    "min_severity": 2
+  }
+}

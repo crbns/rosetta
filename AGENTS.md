@@ -25,7 +25,7 @@ Pipeline per scan (sequential): capture → center-crop to **exactly 512×512 PN
 app.py            stdlib HTTP server + pipeline + Engine supervisor + JSONL log (OpenCV optional)
 index.html        single file, inline CSS/JS, zero external requests
 engine/           rosetta_vlm.cpp (+ rosetta_d1.cpp, P2), CMakeLists.txt, third_party/nlohmann/json.hpp
-tools/            mock_engine.py, zetic_run.py*, offline_audit.py*, openai_vlm_bridge.py, calibrate.py
+tools/            mock_engine.py, zetic_run.py*, offline_audit.py*, openai_vlm_bridge.py, calibrate.py, make_labels.py + prop_key.json, metrics.py
 scripts/          preflight.sh*, stage_zetic.sh, setup_board.sh, run.sh
 samples/          512×512 PNGs of every prop (upload-demo safety net)
 logs/             rosetta.jsonl + img/ (committed, keep small)
