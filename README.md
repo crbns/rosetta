@@ -50,4 +50,21 @@ _Measured on the board, medians of ≥5 scans. To be filled in with `python3 too
 | End-to-end (s) | — |
 | Peak RSS VLM / d1 (MB) | — |
 
+Runtime: ZETIC Ixian Hexagon SDK 0.2.2 (0.2.1 fallback). Models: `ZETIC-ai/LFM3-VL-2B-IQ9` and `ZETIC-ai/d1-2B-IQ9`, precision as shipped in those IQ9 packages. Numbers above are filled only from our own board runs; none are quoted from vendor docs.
+
+## Decision log
+
+Written automatically, no extra step. Every scan appends one flushed and fsynced JSONL line to `logs/rosetta.jsonl` with separate fields for the input (`input`, plus the 512×512 image saved as `logs/img/<scan_id>.png`), the model proposals (`vlm.proposal`, `d1` scores), the code decision (`decision`, from `gate()`), the executed action (`action`), `errors`, and timing (`metrics`). Follow-up chat goes to `logs/chat.jsonl`. Errors are recorded as data, and the server keeps running.
+
+## Thresholds
+
+`IMPORTANCE_THRESHOLD` and the `action_p` cut in `gate()` default to 0.5 as **uncalibrated placeholders**. `tools/calibrate.py` sets the threshold from labeled prop scans; until that runs on board output, treat the alert decision as uncalibrated.
+
+## Offline status
+
+- No CDNs, web fonts, remote APIs or telemetry. The UI is one local file, and the server binds to loopback only. The laptop reaches it through an SSH tunnel.
+- `python3 tools/offline_audit.py .` reports 0 errors. Its 3 warnings are URLs in `scripts/stage_zetic.sh` and `scripts/preflight.sh`, which are one-time setup scripts run with internet *before* the demo, never at runtime.
+- `scripts/run.sh` sets `HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1`.
+- Demo: board Wi-Fi off (`sudo nmcli radio wifi off`, Ethernet unplugged) from the UART console, then scan.
+
 See [`rosetta-master-plan.md`](rosetta-master-plan.md) for the full design.
